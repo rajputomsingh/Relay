@@ -197,6 +197,12 @@ func run() error {
 		attemptsCollection,
 		cfg.RelayAPIKey,
 	)
+	metricsHandler := handlers.NewMetricsHandler(
+		eventsCollection,
+		attemptsCollection,
+		cfg.RelayAPIKey,
+	)
+	metricsHandler.Register(mux)
 	inspectionHandler.Register(mux)
 
 	server := &http.Server{
