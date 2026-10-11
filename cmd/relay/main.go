@@ -132,6 +132,40 @@ func run() error {
 		return errors.New("failed to initialize delivery indexes")
 	}
 
+	// Indexes for event listing and stable cursor pagination.
+	listingIndexCtx, cancelListingIndex := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+
+	_, err = eventsCollection.Indexes().CreateMany(
+		listingIndexCtx,
+		[]mongo.IndexModel{
+			{
+				Keys: bson.D{
+					{Key: "received_at", Value: -1},
+					{Key: "_id", Value: -1},
+				},
+				Options: options.Index().
+					SetName("idx_events_received_id"),
+			},
+			{
+				Keys: bson.D{
+					{Key: "delivery_status", Value: 1},
+					{Key: "received_at", Value: -1},
+					{Key: "_id", Value: -1},
+				},
+				Options: options.Index().
+					SetName("idx_events_status_received_id"),
+			},
+		},
+	)
+	cancelListingIndex()
+
+	if err != nil {
+		return errors.New("failed to initialize event listing indexes")
+	}
+
 	// Index for querying attempts by event and time.
 	attemptIndexCtx, cancelAttemptIndex := context.WithTimeout(
 		context.Background(),
@@ -192,11 +226,18 @@ func run() error {
 	)
 	eventsHandler.Register(mux)
 
+	eventsListHandler := handlers.NewEventsListHandler(
+		eventsCollection,
+		cfg.RelayAPIKey,
+	)
+	eventsListHandler.Register(mux)
+
 	inspectionHandler := handlers.NewInspectionHandler(
 		eventsCollection,
 		attemptsCollection,
 		cfg.RelayAPIKey,
 	)
+
 	metricsHandler := handlers.NewMetricsHandler(
 		eventsCollection,
 		attemptsCollection,
