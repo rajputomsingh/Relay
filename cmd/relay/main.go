@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,8 +21,18 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(
+		os.Stdout,
+		&slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		},
+	)))
+
 	if err := run(); err != nil {
-		log.Printf("Relay stopped: %v", err)
+		slog.Error(
+			"relay stopped",
+			"error_type", fmt.Sprintf("%T", err),
+		)
 		os.Exit(1)
 	}
 }
@@ -53,7 +63,10 @@ func run() error {
 		defer cancel()
 
 		if err := client.Disconnect(ctx); err != nil {
-			log.Println("MongoDB disconnect failed")
+			slog.Error(
+				"MongoDB disconnect failed",
+				"error_type", fmt.Sprintf("%T", err),
+			)
 		}
 	}()
 
@@ -222,19 +235,22 @@ func run() error {
 			worker.Run(stopCtx)
 		}()
 
-		log.Println("Webhook delivery enabled")
+		slog.Info("webhook delivery enabled")
 	} else {
 		close(workerDone)
-		log.Println("Webhook delivery disabled: RELAY_WEBHOOK_URL is empty")
+		slog.Info(
+			"webhook delivery disabled",
+			"reason", "webhook_url_not_configured",
+		)
 	}
 
 	serverErrors := make(chan error, 1)
 
 	go func() {
-		log.Printf(
-			"Relay starting: environment=%s port=%s",
-			cfg.Environment,
-			cfg.Port,
+		slog.Info(
+			"relay starting",
+			"environment", cfg.Environment,
+			"port", cfg.Port,
 		)
 		serverErrors <- server.ListenAndServe()
 	}()
@@ -248,10 +264,11 @@ func run() error {
 			return nil
 		}
 
+		// Do not log the raw server error; keep details out of logs.
 		return fmt.Errorf("HTTP server failed: %w", err)
 
 	case <-stopCtx.Done():
-		log.Println("Shutdown signal received")
+		slog.Info("shutdown signal received")
 
 		shutdownCtx, cancel := context.WithTimeout(
 			context.Background(),
@@ -269,7 +286,7 @@ func run() error {
 		stop()
 		<-workerDone
 
-		log.Println("HTTP server shut down gracefully")
+		slog.Info("HTTP server shut down gracefully")
 		return nil
 	}
 }
