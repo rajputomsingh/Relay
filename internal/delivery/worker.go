@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"time"
@@ -23,12 +23,14 @@ type Config struct {
 	MaxAttempts    int
 	RequestTimeout time.Duration
 	LeaseDuration  time.Duration
+	Logger         *slog.Logger
 }
 
 type Worker struct {
 	events   *mongo.Collection
 	attempts *mongo.Collection
 	config   Config
+	logger   *slog.Logger
 	client   *http.Client
 }
 
@@ -56,10 +58,16 @@ func NewWorker(
 	attempts *mongo.Collection,
 	cfg Config,
 ) *Worker {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	return &Worker{
 		events:   events,
 		attempts: attempts,
 		config:   cfg,
+		logger:   logger,
 		client: &http.Client{
 			Timeout: cfg.RequestTimeout,
 			CheckRedirect: func(
@@ -76,30 +84,36 @@ func NewWorker(
 // Start the worker only when a webhook destination is configured.
 func (w *Worker) Run(ctx context.Context) {
 	if w.config.PollInterval <= 0 {
-		log.Println("delivery worker: poll interval must be positive")
+		w.logger.Error(
+			"delivery worker configuration invalid",
+			"reason", "poll interval must be positive",
+		)
 		return
 	}
 
 	ticker := time.NewTicker(w.config.PollInterval)
 	defer ticker.Stop()
 
-	log.Println("Relay delivery worker started")
+	w.logger.Info("delivery worker started")
 
 	for {
 		if ctx.Err() != nil {
-			log.Println("Relay delivery worker stopped")
+			w.logger.Info("delivery worker stopped")
 			return
 		}
 
 		if err := w.processOne(ctx); err != nil &&
 			!errors.Is(err, mongo.ErrNoDocuments) &&
 			ctx.Err() == nil {
-			log.Printf("delivery worker: %v", err)
+			w.logger.Error(
+				"delivery worker processing failed",
+				"error_type", fmt.Sprintf("%T", err),
+			)
 		}
 
 		select {
 		case <-ctx.Done():
-			log.Println("Relay delivery worker stopped")
+			w.logger.Info("delivery worker stopped")
 			return
 		case <-ticker.C:
 		}
@@ -158,7 +172,7 @@ func (w *Worker) claim(ctx context.Context) (eventRecord, error) {
 func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 	now := time.Now().UTC()
 
-	_, err := w.events.UpdateMany(
+	result, err := w.events.UpdateMany(
 		ctx,
 		bson.M{
 			"delivery_status":   "processing",
@@ -181,6 +195,13 @@ func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 		return fmt.Errorf("recover exhausted delivery leases: %w", err)
 	}
 
+	if result.ModifiedCount > 0 {
+		w.logger.Warn(
+			"expired delivery leases exhausted",
+			"count", result.ModifiedCount,
+		)
+	}
+
 	return nil
 }
 
@@ -199,16 +220,18 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	outcome := "failed"
 	var attemptErr error
 
-	// Save attempt history independently from the event's delivery state.
-	// A history-write failure must not trigger another webhook delivery.
+	// Persist attempt history independently of the delivery state.
+	// Always emit the completion log, even when history is unavailable.
 	defer func() {
 		finishedAt := time.Now().UTC()
+		durationMS := finishedAt.Sub(startedAt).Milliseconds()
+
 		attempt := Attempt{
 			EventID:       event.ID,
 			AttemptNumber: event.Attempts,
 			StartedAt:     startedAt,
 			FinishedAt:    finishedAt,
-			DurationMS:    finishedAt.Sub(startedAt).Milliseconds(),
+			DurationMS:    durationMS,
 			HTTPStatus:    httpStatus,
 			Outcome:       outcome,
 		}
@@ -218,23 +241,61 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 		}
 
 		if w.attempts == nil {
-			log.Printf(
-				"delivery attempt history unavailable for event %s",
-				event.ID.Hex(),
+			w.logger.Warn(
+				"delivery attempt history unavailable",
+				"event_id", event.ID.Hex(),
+				"attempt", event.Attempts,
 			)
-			return
+		} else {
+			saveCtx, cancel := context.WithTimeout(
+				context.Background(),
+				5*time.Second,
+			)
+
+			_, saveErr := w.attempts.InsertOne(saveCtx, attempt)
+			cancel()
+
+			if saveErr != nil {
+				w.logger.Error(
+					"delivery attempt history write failed",
+					"event_id", event.ID.Hex(),
+					"attempt", event.Attempts,
+					"error_type", fmt.Sprintf("%T", saveErr),
+				)
+			}
 		}
 
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		// Keep the persisted history outcome compatible with existing tests.
+		// Use a separate value for structured operational logging.
+		logOutcome := outcome
+		if outcome == "failed" &&
+			event.Attempts < w.config.MaxAttempts {
+			logOutcome = "retry_scheduled"
+		}
 
-		if _, saveErr := w.attempts.InsertOne(saveCtx, attempt); saveErr != nil {
-			log.Printf(
-				"delivery attempt history: event %s attempt %d: %v",
-				event.ID.Hex(),
-				event.Attempts,
-				saveErr,
+		attrs := []any{
+			"event_id", event.ID.Hex(),
+			"attempt", event.Attempts,
+			"outcome", logOutcome,
+			"duration_ms", durationMS,
+			"http_status", httpStatus,
+		}
+
+		if attemptErr != nil {
+			attrs = append(
+				attrs,
+				"error_type",
+				fmt.Sprintf("%T", attemptErr),
 			)
+		}
+
+		switch logOutcome {
+		case "delivered":
+			w.logger.Info("webhook delivery attempt completed", attrs...)
+		case "retry_scheduled":
+			w.logger.Warn("webhook delivery attempt completed", attrs...)
+		default:
+			w.logger.Error("webhook delivery attempt completed", attrs...)
 		}
 	}()
 
@@ -293,8 +354,8 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 		return w.recordFailure(ctx, event, attemptErr)
 	}
 
-	// The receiver acknowledged delivery. Keep this outcome even if
-	// updating the event document subsequently fails.
+	// The receiver acknowledged delivery. Preserve this outcome even if
+	// the subsequent event-document update fails.
 	outcome = "delivered"
 
 	_, err = w.events.UpdateOne(
@@ -322,6 +383,8 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	return nil
 }
 
+// recordFailure preserves the existing attempt-history outcome of "failed".
+// The completion logger derives "retry_scheduled" separately when applicable.
 func (w *Worker) recordFailure(
 	ctx context.Context,
 	event eventRecord,
@@ -360,11 +423,8 @@ func (w *Worker) recordFailure(
 		},
 	)
 	if err != nil {
-		return fmt.Errorf(
-			"record delivery failure (%v): %w",
-			cause,
-			err,
-		)
+		// Avoid returning the original cause, which could contain a URL.
+		return fmt.Errorf("record delivery failure: %w", err)
 	}
 
 	return nil
