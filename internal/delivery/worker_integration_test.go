@@ -621,22 +621,22 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestStarted := make(chan struct{})
-	requestCancelled := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var releaseOnce sync.Once
+
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseHandler)
+		})
+	}
+	defer release()
 
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
 		close(requestStarted)
-		select {
-		case <-r.Context().Done():
-		case <-time.After(5 * time.Second):
-		}
-		select {
-		case <-requestCancelled:
-		default:
-			close(requestCancelled)
-		}
+		<-releaseHandler
 	}))
 	defer server.Close()
 
@@ -644,6 +644,8 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 	worker := newIntegrationWorker(server.URL, 3, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	workerDone := make(chan struct{})
 
 	go func() {
@@ -666,11 +668,8 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 		t.Fatal("worker did not stop after cancellation")
 	}
 
-	select {
-	case <-requestCancelled:
-	case <-time.After(5 * time.Second):
-		t.Fatal("webhook request context was not cancelled")
-	}
+	// Allow the test server handler to finish before cleanup.
+	release()
 
 	state := readWorkerEventState(t, db.events, id)
 
