@@ -1,0 +1,318 @@
+package delivery
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+)
+
+type workerIntegrationDB struct {
+	events   *mongo.Collection
+	attempts *mongo.Collection
+}
+
+func newWorkerIntegrationDB(t *testing.T) workerIntegrationDB {
+	t.Helper()
+
+	uri := strings.TrimSpace(os.Getenv("MONGODB_TEST_URI"))
+	if uri == "" {
+		t.Skip("set MONGODB_TEST_URI to run delivery worker integration tests")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(options.Client().
+		ApplyURI(uri).
+		SetAppName("relay-delivery-integration-tests").
+		SetServerSelectionTimeout(5 * time.Second))
+	if err != nil {
+		t.Fatalf("connect to test MongoDB: %v", err)
+	}
+
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		disconnectCtx, disconnectCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer disconnectCancel()
+		_ = client.Disconnect(disconnectCtx)
+		t.Fatalf("ping test MongoDB: %v", err)
+	}
+
+	dbName := fmt.Sprintf("rdt_%x", time.Now().UnixNano())
+	db := client.Database(dbName)
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(), 10*time.Second,
+		)
+		defer cleanupCancel()
+
+		if err := db.Drop(cleanupCtx); err != nil {
+			t.Errorf("drop integration test database: %v", err)
+		}
+		if err := client.Disconnect(cleanupCtx); err != nil {
+			t.Errorf("disconnect test MongoDB client: %v", err)
+		}
+	})
+
+	return workerIntegrationDB{
+		events:   db.Collection("events"),
+		attempts: db.Collection("delivery_attempts"),
+	}
+}
+
+func insertWorkerIntegrationEvent(t *testing.T, collection *mongo.Collection) bson.ObjectID {
+	t.Helper()
+
+	id := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	event := bson.M{
+		"_id":               id,
+		"source":            "integration-test",
+		"event_type":        "invoice.paid",
+		"data":              bson.M{"invoice_id": "inv-worker-test"},
+		"idempotency_key":   "worker-test-" + id.Hex(),
+		"received_at":       now,
+		"status":            "accepted",
+		"delivery_status":   "pending",
+		"delivery_attempts": 0,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := collection.InsertOne(ctx, event); err != nil {
+		t.Fatalf("insert integration event: %v", err)
+	}
+
+	return id
+}
+
+type workerEventState struct {
+	DeliveryStatus    string     `bson:"delivery_status"`
+	DeliveryAttempts  int        `bson:"delivery_attempts"`
+	DeliveredAt       *time.Time `bson:"delivered_at"`
+	FailedAt          *time.Time `bson:"failed_at"`
+	NextAttemptAt     *time.Time `bson:"next_attempt_at"`
+	LastDeliveryError string     `bson:"last_delivery_error"`
+}
+
+func readWorkerEventState(t *testing.T, collection *mongo.Collection, id bson.ObjectID) workerEventState {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var state workerEventState
+	if err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&state); err != nil {
+		t.Fatalf("read event state: %v", err)
+	}
+
+	return state
+}
+
+func readWorkerAttempts(t *testing.T, collection *mongo.Collection, eventID bson.ObjectID) []Attempt {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cursor, err := collection.Find(ctx, bson.M{"event_id": eventID})
+	if err != nil {
+		t.Fatalf("find delivery attempts: %v", err)
+	}
+	defer cursor.Close(ctx)
+
+	var attempts []Attempt
+	if err := cursor.All(ctx, &attempts); err != nil {
+		t.Fatalf("decode delivery attempts: %v", err)
+	}
+
+	return attempts
+}
+
+func newIntegrationWorker(serverURL string, maxAttempts int, db workerIntegrationDB) *Worker {
+	return NewWorker(db.events, db.attempts, Config{
+		WebhookURL:     serverURL,
+		MaxAttempts:    maxAttempts,
+		RequestTimeout: 3 * time.Second,
+		LeaseDuration:  30 * time.Second,
+	})
+}
+
+func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+
+		if r.Method != http.MethodPost {
+			t.Errorf("request method = %q; want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q; want application/json", got)
+		}
+		if got := r.Header.Get("Idempotency-Key"); !strings.HasPrefix(got, "worker-test-") {
+			t.Errorf("unexpected Idempotency-Key: %q", got)
+		}
+		if r.Header.Get("X-Relay-Event-ID") == "" {
+			t.Error("missing X-Relay-Event-ID header")
+		}
+
+		var payload webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode webhook payload: %v", err)
+		}
+		if payload.EventType != "invoice.paid" {
+			t.Errorf("payload event type = %q; want invoice.paid", payload.EventType)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	worker := newIntegrationWorker(server.URL, 3, db)
+
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("process event: %v", err)
+	}
+
+	if requestCount != 1 {
+		t.Fatalf("webhook request count = %d; want 1", requestCount)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "delivered" {
+		t.Errorf("delivery status = %q; want delivered", state.DeliveryStatus)
+	}
+	if state.DeliveryAttempts != 1 {
+		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	}
+	if state.DeliveredAt == nil || state.DeliveredAt.IsZero() {
+		t.Error("expected delivered_at to be set")
+	}
+
+	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	if len(attempts) != 1 {
+		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
+	}
+
+	if attempts[0].AttemptNumber != 1 {
+		t.Errorf("attempt number = %d; want 1", attempts[0].AttemptNumber)
+	}
+	if attempts[0].HTTPStatus != http.StatusNoContent {
+		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusNoContent)
+	}
+	if attempts[0].Outcome != "delivered" {
+		t.Errorf("attempt outcome = %q; want delivered", attempts[0].Outcome)
+	}
+	if attempts[0].FinishedAt.IsZero() {
+		t.Error("expected attempt finished_at to be set")
+	}
+}
+
+func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	worker := newIntegrationWorker(server.URL, 3, db)
+
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("process event: %v", err)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "pending" {
+		t.Errorf("delivery status = %q; want pending", state.DeliveryStatus)
+	}
+	if state.DeliveryAttempts != 1 {
+		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	}
+	if state.NextAttemptAt == nil {
+		t.Fatal("expected next_attempt_at to be set")
+	}
+	if !state.NextAttemptAt.After(time.Now().UTC()) {
+		t.Errorf("next_attempt_at = %v; want a future time", *state.NextAttemptAt)
+	}
+	if !strings.Contains(state.LastDeliveryError, "503") {
+		t.Errorf("last delivery error = %q; want HTTP 503", state.LastDeliveryError)
+	}
+
+	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	if len(attempts) != 1 {
+		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
+	}
+	if attempts[0].HTTPStatus != http.StatusServiceUnavailable {
+		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusServiceUnavailable)
+	}
+	if attempts[0].Outcome != "failed" {
+		t.Errorf("attempt outcome = %q; want failed", attempts[0].Outcome)
+	}
+	if attempts[0].Error == "" {
+		t.Error("expected attempt error to be recorded")
+	}
+}
+
+func TestWorkerIntegrationFailsAfterMaximumAttempts(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	worker := newIntegrationWorker(server.URL, 1, db)
+
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("process event: %v", err)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "failed" {
+		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	}
+	if state.DeliveryAttempts != 1 {
+		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	}
+	if state.FailedAt == nil || state.FailedAt.IsZero() {
+		t.Error("expected failed_at to be set")
+	}
+	if state.NextAttemptAt != nil {
+		t.Errorf("next_attempt_at = %v; want unset", state.NextAttemptAt)
+	}
+	if !strings.Contains(state.LastDeliveryError, "500") {
+		t.Errorf("last delivery error = %q; want HTTP 500", state.LastDeliveryError)
+	}
+
+	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	if len(attempts) != 1 {
+		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
+	}
+	if attempts[0].Outcome != "failed" {
+		t.Errorf("attempt outcome = %q; want failed", attempts[0].Outcome)
+	}
+	if attempts[0].HTTPStatus != http.StatusInternalServerError {
+		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusInternalServerError)
+	}
+}
