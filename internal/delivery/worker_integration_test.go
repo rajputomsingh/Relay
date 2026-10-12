@@ -3,11 +3,13 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,5 +518,101 @@ func TestWorkerIntegrationFailsExpiredExhaustedLease(t *testing.T) {
 	attempts := readWorkerAttempts(t, db.attempts, eventID)
 	if len(attempts) != 0 {
 		t.Errorf("persisted attempts = %d; want 0 additional attempts", len(attempts))
+	}
+}
+
+func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+
+	const workerCount = 16
+
+	start := make(chan struct{})
+	results := make(chan error, workerCount)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			worker := newIntegrationWorker("http://127.0.0.1:1", 3, db)
+
+			<-start
+
+			ctx, cancel := context.WithTimeout(
+				context.Background(),
+				5*time.Second,
+			)
+			defer cancel()
+
+			event, err := worker.claim(ctx)
+			if err == nil {
+				if event.ID != eventID {
+					results <- fmt.Errorf(
+						"claimed event ID = %s; want %s",
+						event.ID.Hex(),
+						eventID.Hex(),
+					)
+					return
+				}
+
+				results <- nil
+				return
+			}
+
+			results <- err
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	noDocuments := 0
+
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, mongo.ErrNoDocuments):
+			noDocuments++
+		default:
+			t.Errorf("unexpected claim error: %v", err)
+		}
+	}
+
+	if successes != 1 {
+		t.Errorf("successful claims = %d; want exactly 1", successes)
+	}
+
+	if noDocuments != workerCount-1 {
+		t.Errorf(
+			"unsuccessful claims = %d; want %d",
+			noDocuments,
+			workerCount-1,
+		)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+
+	if state.DeliveryStatus != "processing" {
+		t.Errorf(
+			"delivery status = %q; want processing",
+			state.DeliveryStatus,
+		)
+	}
+
+	if state.DeliveryAttempts != 1 {
+		t.Errorf(
+			"delivery attempts = %d; want 1",
+			state.DeliveryAttempts,
+		)
+	}
+
+	if state.LeaseUntil == nil || !state.LeaseUntil.After(time.Now()) {
+		t.Errorf("expected a future lease; got %v", state.LeaseUntil)
 	}
 }
