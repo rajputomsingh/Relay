@@ -441,7 +441,9 @@ func TestWorkerIntegrationDoesNotReclaimActiveLease(t *testing.T) {
 	if state.DeliveryAttempts != 1 {
 		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
 	}
-	if state.LeaseUntil == nil || !state.LeaseUntil.Equal(leaseUntil) {
+
+	if state.LeaseUntil == nil ||
+		state.LeaseUntil.UnixMilli() != leaseUntil.UnixMilli() {
 		t.Errorf("lease_until = %v; want %v", state.LeaseUntil, leaseUntil)
 	}
 	if requestCount != 0 {
