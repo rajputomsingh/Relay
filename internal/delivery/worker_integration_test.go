@@ -1,10 +1,12 @@
 package delivery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -777,5 +779,56 @@ func TestWorkerIntegrationFailureUpdateMatchesNoDocuments(t *testing.T) {
 	state := readWorkerEventState(t, db.events, eventID)
 	if state.DeliveryStatus != "failed" {
 		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	}
+}
+func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	worker := NewWorker(db.events, db.attempts, Config{
+		WebhookURL:     "http://127.0.0.1:1",
+		PollInterval:   10 * time.Millisecond,
+		MaxAttempts:    3,
+		RequestTimeout: 3 * time.Second,
+		LeaseDuration:  30 * time.Second,
+		Logger:         logger,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(logs.String(), "delivery worker started") {
+			break
+		}
+
+		select {
+		case <-deadline:
+			t.Fatal("worker did not start before the deadline")
+		case <-done:
+			t.Fatal("worker exited before startup was observed")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker Run did not stop after context cancellation")
+	}
+
+	if !strings.Contains(logs.String(), "delivery worker stopped") {
+		t.Fatal("expected worker shutdown log")
 	}
 }
