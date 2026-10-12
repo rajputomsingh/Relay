@@ -695,3 +695,87 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 		)
 	}
 }
+
+func TestWorkerIntegrationDeliveryUpdateMatchesNoDocuments(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		_, err := db.events.UpdateOne(
+			ctx,
+			bson.M{"_id": eventID},
+			bson.M{"$set": bson.M{"delivery_status": "failed"}},
+		)
+		if err != nil {
+			t.Errorf("change event state in handler: %v", err)
+			http.Error(w, "test setup failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	worker := newIntegrationWorker(server.URL, 3, db)
+	err := worker.processOne(context.Background())
+
+	if err == nil {
+		t.Fatal("expected an error when delivery update matches no documents")
+	}
+	if !strings.Contains(err.Error(), "no longer processing") {
+		t.Fatalf("error = %q; want event no longer processing", err)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "failed" {
+		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	}
+}
+
+func TestWorkerIntegrationFailureUpdateMatchesNoDocuments(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		_, err := db.events.UpdateOne(
+			ctx,
+			bson.M{"_id": eventID},
+			bson.M{"$set": bson.M{"delivery_status": "failed"}},
+		)
+		if err != nil {
+			t.Errorf("change event state in handler: %v", err)
+			http.Error(w, "test setup failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	worker := newIntegrationWorker(server.URL, 3, db)
+	err := worker.processOne(context.Background())
+
+	if err == nil {
+		t.Fatal("expected an error when failure update matches no documents")
+	}
+	if !strings.Contains(err.Error(), "no longer processing") {
+		t.Fatalf("error = %q; want event no longer processing", err)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "failed" {
+		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	}
+}

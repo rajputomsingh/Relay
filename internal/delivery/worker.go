@@ -358,7 +358,7 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	// the subsequent event-document update fails.
 	outcome = "delivered"
 
-	_, err = w.events.UpdateOne(
+	result, err := w.events.UpdateOne(
 		ctx,
 		bson.M{
 			"_id":             event.ID,
@@ -378,6 +378,9 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	)
 	if err != nil {
 		return fmt.Errorf("mark event delivered: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("mark event delivered: event is no longer processing")
 	}
 
 	return nil
@@ -411,7 +414,7 @@ func (w *Worker) recordFailure(
 		)
 	}
 
-	_, err := w.events.UpdateOne(
+	result, err := w.events.UpdateOne(
 		ctx,
 		bson.M{
 			"_id":             event.ID,
@@ -425,6 +428,9 @@ func (w *Worker) recordFailure(
 	if err != nil {
 		// Avoid returning the original cause, which could contain a URL.
 		return fmt.Errorf("record delivery failure: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("record delivery failure: event is no longer processing")
 	}
 
 	return nil
