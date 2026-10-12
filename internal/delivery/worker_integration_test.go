@@ -616,3 +616,83 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 		t.Errorf("expected a future lease; got %v", state.LeaseUntil)
 	}
 }
+
+func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	requestStarted := make(chan struct{})
+	requestCancelled := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		close(requestStarted)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+		select {
+		case <-requestCancelled:
+		default:
+			close(requestCancelled)
+		}
+	}))
+	defer server.Close()
+
+	id := insertWorkerIntegrationEvent(t, db.events)
+	worker := newIntegrationWorker(server.URL, 3, db)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	workerDone := make(chan struct{})
+
+	go func() {
+		defer close(workerDone)
+		_ = worker.processOne(ctx)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("worker did not start the webhook request")
+	}
+
+	cancel()
+
+	select {
+	case <-workerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+
+	select {
+	case <-requestCancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook request context was not cancelled")
+	}
+
+	state := readWorkerEventState(t, db.events, id)
+
+	if state.DeliveryStatus == "delivered" {
+		t.Fatal("event marked delivered despite no webhook acknowledgement")
+	}
+
+	if state.DeliveryStatus != "processing" {
+		t.Fatalf(
+			"delivery status = %q; want processing until lease recovery",
+			state.DeliveryStatus,
+		)
+	}
+
+	if state.LeaseUntil == nil {
+		t.Fatal("expected the interrupted event to retain its lease")
+	}
+
+	if state.DeliveryAttempts != 1 {
+		t.Fatalf(
+			"delivery attempts = %d; want 1",
+			state.DeliveryAttempts,
+		)
+	}
+}
