@@ -730,8 +730,8 @@ func TestWorkerIntegrationDeliveryUpdateMatchesNoDocuments(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when delivery update matches no documents")
 	}
-	if !strings.Contains(err.Error(), "no longer processing") {
-		t.Fatalf("error = %q; want event no longer processing", err)
+	if !strings.Contains(err.Error(), "no longer owned by this lease") {
+		t.Fatalf("error = %q; want event no longer owned by this lease", err)
 	}
 
 	state := readWorkerEventState(t, db.events, eventID)
@@ -772,8 +772,8 @@ func TestWorkerIntegrationFailureUpdateMatchesNoDocuments(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when failure update matches no documents")
 	}
-	if !strings.Contains(err.Error(), "no longer processing") {
-		t.Fatalf("error = %q; want event no longer processing", err)
+	if !strings.Contains(err.Error(), "no longer owned by this lease") {
+		t.Fatalf("error = %q; want event no longer owned by this lease", err)
 	}
 
 	state := readWorkerEventState(t, db.events, eventID)
