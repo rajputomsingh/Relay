@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -520,6 +521,68 @@ func TestWorkerIntegrationFailsExpiredExhaustedLease(t *testing.T) {
 	attempts := readWorkerAttempts(t, db.attempts, eventID)
 	if len(attempts) != 0 {
 		t.Errorf("persisted attempts = %d; want 0 additional attempts", len(attempts))
+	}
+}
+
+func TestWorkerIntegrationDoesNotReclaimFailedExhaustedLease(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	now := time.Now().UTC()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := db.events.UpdateOne(ctx, bson.M{"_id": eventID}, bson.M{
+		"$set": bson.M{
+			"delivery_status":     "processing",
+			"delivery_attempts":   3,
+			"lease_until":         now.Add(-time.Minute),
+			"next_attempt_at":     now.Add(-2 * time.Minute),
+			"last_delivery_error": "previous delivery failure",
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare exhausted lease: %v", err)
+	}
+
+	worker := newIntegrationWorker(server.URL, 3, db)
+
+	// The first run transitions the expired, exhausted lease to failed.
+	err = worker.processOne(context.Background())
+	if err != mongo.ErrNoDocuments {
+		t.Fatalf("first processOne() error = %v; want mongo.ErrNoDocuments", err)
+	}
+
+	// Repeated runs must not reclaim the terminally failed event.
+	for i := 0; i < 3; i++ {
+		err = worker.processOne(context.Background())
+		if err != mongo.ErrNoDocuments {
+			t.Fatalf("processOne() run %d error = %v; want mongo.ErrNoDocuments", i+2, err)
+		}
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "failed" {
+		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	}
+	if state.DeliveryAttempts != 3 {
+		t.Errorf("delivery attempts = %d; want 3", state.DeliveryAttempts)
+	}
+	if requestCount.Load() != 0 {
+		t.Errorf("webhook requests = %d; want 0", requestCount.Load())
+	}
+
+	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	if len(attempts) != 0 {
+		t.Errorf("persisted attempts = %d; want 0", len(attempts))
 	}
 }
 
