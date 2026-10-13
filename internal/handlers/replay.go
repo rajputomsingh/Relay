@@ -93,6 +93,7 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 				"delivered_at":        "",
 				"last_delivery_error": "",
 				"lease_until":         "",
+				"lease_token":         "",
 			},
 		},
 		options.FindOneAndUpdate().SetReturnDocument(options.After),

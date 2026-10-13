@@ -42,6 +42,7 @@ type eventRecord struct {
 	IdempotencyKey string         `bson:"idempotency_key"`
 	ReceivedAt     time.Time      `bson:"received_at"`
 	Attempts       int            `bson:"delivery_attempts"`
+	LeaseToken     string         `bson:"lease_token"`
 }
 
 type webhookPayload struct {
@@ -121,9 +122,11 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // claim atomically assigns one due event to this worker.
-// Expired leases can be reclaimed if attempts remain.
+// Every claim receives a fresh token, including expired-lease recovery.
+// The token fences off state updates from stale workers.
 func (w *Worker) claim(ctx context.Context) (eventRecord, error) {
 	now := time.Now().UTC()
+	leaseToken := bson.NewObjectID().Hex()
 
 	filter := bson.M{
 		"$or": []bson.M{
@@ -147,6 +150,7 @@ func (w *Worker) claim(ctx context.Context) (eventRecord, error) {
 			"delivery_status": "processing",
 			"lease_until":     now.Add(w.config.LeaseDuration),
 			"last_attempt_at": now,
+			"lease_token":     leaseToken,
 		},
 		"$inc": bson.M{
 			"delivery_attempts": 1,
@@ -187,6 +191,7 @@ func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 			},
 			"$unset": bson.M{
 				"lease_until":     "",
+				"lease_token":     "",
 				"next_attempt_at": "",
 			},
 		},
@@ -363,6 +368,7 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 		bson.M{
 			"_id":             event.ID,
 			"delivery_status": "processing",
+			"lease_token":     event.LeaseToken,
 		},
 		bson.M{
 			"$set": bson.M{
@@ -371,6 +377,7 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 			},
 			"$unset": bson.M{
 				"lease_until":         "",
+				"lease_token":         "",
 				"next_attempt_at":     "",
 				"last_delivery_error": "",
 			},
@@ -380,7 +387,9 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 		return fmt.Errorf("mark event delivered: %w", err)
 	}
 	if result.MatchedCount == 0 {
-		return errors.New("mark event delivered: event is no longer processing")
+		return errors.New(
+			"mark event delivered: event is no longer owned by this lease",
+		)
 	}
 
 	return nil
@@ -388,6 +397,7 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 
 // recordFailure preserves the existing attempt-history outcome of "failed".
 // The completion logger derives "retry_scheduled" separately when applicable.
+// A stale worker cannot change state after its lease token has been replaced.
 func (w *Worker) recordFailure(
 	ctx context.Context,
 	event eventRecord,
@@ -401,6 +411,7 @@ func (w *Worker) recordFailure(
 
 	unset := bson.M{
 		"lease_until": "",
+		"lease_token": "",
 	}
 
 	if event.Attempts >= w.config.MaxAttempts {
@@ -419,6 +430,7 @@ func (w *Worker) recordFailure(
 		bson.M{
 			"_id":             event.ID,
 			"delivery_status": "processing",
+			"lease_token":     event.LeaseToken,
 		},
 		bson.M{
 			"$set":   set,
@@ -430,7 +442,9 @@ func (w *Worker) recordFailure(
 		return fmt.Errorf("record delivery failure: %w", err)
 	}
 	if result.MatchedCount == 0 {
-		return errors.New("record delivery failure: event is no longer processing")
+		return errors.New(
+			"record delivery failure: event is no longer owned by this lease",
+		)
 	}
 
 	return nil
