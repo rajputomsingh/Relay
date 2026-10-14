@@ -1,4 +1,4 @@
-package config
+﻿package config
 
 import (
 	"errors"
@@ -11,14 +11,15 @@ import (
 )
 
 type Config struct {
-	Environment         string
-	Port                string
-	MongoURI            string
-	MongoDatabase       string
-	RelayAPIKey         string
-	WebhookURL          string
-	WorkerPollSeconds   int
-	MaxDeliveryAttempts int
+	Environment          string
+	Port                 string
+	MongoURI             string
+	MongoDatabase        string
+	RelayAPIKey          string
+	WebhookURL           string
+	WorkerPollSeconds    int
+	MaxDeliveryAttempts  int
+	WebhookSigningSecret string
 }
 
 func Load() (Config, error) {
@@ -91,6 +92,23 @@ func Load() (Config, error) {
 		return Config{}, errors.New(
 			"RELAY_MAX_DELIVERY_ATTEMPTS must be between 1 and 20",
 		)
+	}
+
+	cfg.WebhookSigningSecret = strings.TrimSpace(
+		os.Getenv("RELAY_WEBHOOK_SIGNING_SECRET"),
+	)
+
+	if cfg.WebhookSigningSecret != "" {
+		if len(cfg.WebhookSigningSecret) < 32 {
+			return Config{}, errors.New(
+				"RELAY_WEBHOOK_SIGNING_SECRET must contain at least 32 characters",
+			)
+		}
+		if cfg.WebhookURL == "" {
+			return Config{}, errors.New(
+				"RELAY_WEBHOOK_SIGNING_SECRET requires RELAY_WEBHOOK_URL",
+			)
+		}
 	}
 
 	return cfg, nil

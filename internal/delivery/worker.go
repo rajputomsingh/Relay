@@ -10,20 +10,23 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/security"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type Config struct {
-	WebhookURL     string
-	PollInterval   time.Duration
-	MaxAttempts    int
-	RequestTimeout time.Duration
-	LeaseDuration  time.Duration
-	Logger         *slog.Logger
+	WebhookURL           string
+	PollInterval         time.Duration
+	MaxAttempts          int
+	RequestTimeout       time.Duration
+	LeaseDuration        time.Duration
+	Logger               *slog.Logger
+	WebhookSigningSecret string
 }
 
 type Worker struct {
@@ -32,6 +35,7 @@ type Worker struct {
 	config   Config
 	logger   *slog.Logger
 	client   *http.Client
+	signer   *security.Signer
 }
 
 type eventRecord struct {
@@ -64,11 +68,32 @@ func NewWorker(
 		logger = slog.Default()
 	}
 
+	var signer *security.Signer
+	if cfg.WebhookSigningSecret != "" {
+		if len(cfg.WebhookSigningSecret) < 32 {
+			logger.Error(
+				"invalid webhook signing configuration",
+				"reason", "secret must contain at least 32 characters",
+			)
+		} else {
+			s, err := security.NewSigner(cfg.WebhookSigningSecret)
+			if err != nil {
+				logger.Error(
+					"invalid webhook signing configuration",
+					"reason", err.Error(),
+				)
+			} else {
+				signer = s
+			}
+		}
+	}
+
 	return &Worker{
 		events:   events,
 		attempts: attempts,
 		config:   cfg,
 		logger:   logger,
+		signer:   signer,
 		client: &http.Client{
 			Timeout: cfg.RequestTimeout,
 			CheckRedirect: func(
@@ -81,13 +106,42 @@ func NewWorker(
 	}
 }
 
+// validateConfig validates settings required for safe worker operation.
+func (w *Worker) validateConfig() error {
+	switch {
+	case w.config.PollInterval <= 0:
+		return errors.New("poll interval must be positive")
+	case w.config.RequestTimeout <= 0:
+		return errors.New("request timeout must be positive")
+	case w.config.LeaseDuration <= w.config.RequestTimeout:
+		return errors.New(
+			"lease duration must be greater than request timeout",
+		)
+	case w.config.MaxAttempts <= 0:
+		return errors.New("max attempts must be positive")
+	case w.config.WebhookURL == "":
+		return errors.New("webhook URL must not be empty")
+	case w.config.WebhookSigningSecret != "" &&
+		len(w.config.WebhookSigningSecret) < 32:
+		return errors.New(
+			"webhook signing secret must contain at least 32 characters",
+		)
+	case w.config.WebhookSigningSecret != "" && w.signer == nil:
+		return errors.New(
+			"webhook signing is enabled but signer is not configured",
+		)
+	}
+
+	return nil
+}
+
 // Run polls MongoDB until the context is cancelled.
 // Start the worker only when a webhook destination is configured.
 func (w *Worker) Run(ctx context.Context) {
-	if w.config.PollInterval <= 0 {
+	if err := w.validateConfig(); err != nil {
 		w.logger.Error(
 			"delivery worker configuration invalid",
-			"reason", "poll interval must be positive",
+			"reason", err.Error(),
 		)
 		return
 	}
@@ -340,6 +394,13 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	req.Header.Set("User-Agent", "Relay-Webhook/1.0")
 	req.Header.Set("Idempotency-Key", event.IdempotencyKey)
 	req.Header.Set("X-Relay-Event-ID", event.ID.Hex())
+
+	if w.signer != nil {
+		ts := security.TimestampNow()
+		signature := w.signer.SignBody(ts, body)
+		req.Header.Set(security.TimestampHeader, strconv.FormatInt(ts, 10))
+		req.Header.Set(security.SignatureHeader, signature)
+	}
 
 	resp, err := w.client.Do(req)
 	if err != nil {
