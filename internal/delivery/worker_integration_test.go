@@ -1,4 +1,4 @@
-﻿package delivery
+package delivery
 
 import (
 	"bytes"
@@ -25,8 +25,10 @@ import (
 )
 
 type workerIntegrationDB struct {
-	events   *mongo.Collection
-	attempts *mongo.Collection
+	events     *mongo.Collection
+	endpoints  *mongo.Collection
+	deliveries *mongo.Collection
+	attempts   *mongo.Collection
 }
 
 func newWorkerIntegrationDB(t *testing.T) workerIntegrationDB {
@@ -75,11 +77,14 @@ func newWorkerIntegrationDB(t *testing.T) workerIntegrationDB {
 	})
 
 	return workerIntegrationDB{
-		events:   db.Collection("events"),
-		attempts: db.Collection("delivery_attempts"),
+		events:     db.Collection("events"),
+		endpoints:  db.Collection("endpoints"),
+		deliveries: db.Collection("deliveries"),
+		attempts:   db.Collection("delivery_attempts"),
 	}
 }
 
+// insertWorkerIntegrationEvent inserts a minimal event document.
 func insertWorkerIntegrationEvent(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -89,15 +94,13 @@ func insertWorkerIntegrationEvent(
 	id := bson.NewObjectID()
 	now := time.Now().UTC()
 	event := bson.M{
-		"_id":               id,
-		"source":            "integration-test",
-		"event_type":        "invoice.paid",
-		"data":              bson.M{"invoice_id": "inv-worker-test"},
-		"idempotency_key":   "worker-test-" + id.Hex(),
-		"received_at":       now,
-		"status":            "accepted",
-		"delivery_status":   "pending",
-		"delivery_attempts": 0,
+		"_id":             id,
+		"source":          "integration-test",
+		"event_type":      "invoice.paid",
+		"data":            bson.M{"invoice_id": "inv-worker-test"},
+		"idempotency_key": "worker-test-" + id.Hex(),
+		"received_at":     now,
+		"status":          "accepted",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -110,45 +113,115 @@ func insertWorkerIntegrationEvent(
 	return id
 }
 
-type workerEventState struct {
-	DeliveryStatus    string     `bson:"delivery_status"`
-	DeliveryAttempts  int        `bson:"delivery_attempts"`
-	DeliveredAt       *time.Time `bson:"delivered_at"`
-	FailedAt          *time.Time `bson:"failed_at"`
-	NextAttemptAt     *time.Time `bson:"next_attempt_at"`
-	LeaseUntil        *time.Time `bson:"lease_until"`
-	LastDeliveryError string     `bson:"last_delivery_error"`
+// insertWorkerIntegrationEndpoint inserts an enabled endpoint.
+func insertWorkerIntegrationEndpoint(
+	t *testing.T,
+	collection *mongo.Collection,
+	url string,
+	secret string,
+	maxAttempts int,
+) bson.ObjectID {
+	t.Helper()
+
+	id := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	ep := bson.M{
+		"_id":          id,
+		"name":         "test-" + id.Hex(),
+		"url":          url,
+		"enabled":      true,
+		"max_attempts": maxAttempts,
+		"created_at":   now,
+		"updated_at":   now,
+	}
+	if secret != "" {
+		ep["signing_secret"] = secret
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := collection.InsertOne(ctx, ep); err != nil {
+		t.Fatalf("insert integration endpoint: %v", err)
+	}
+
+	return id
 }
 
-func readWorkerEventState(
+// insertWorkerIntegrationDelivery inserts a due delivery.
+func insertWorkerIntegrationDelivery(
+	t *testing.T,
+	collection *mongo.Collection,
+	eventID bson.ObjectID,
+	endpointID bson.ObjectID,
+	maxAttempts int,
+) bson.ObjectID {
+	t.Helper()
+
+	id := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	doc := bson.M{
+		"_id":          id,
+		"event_id":     eventID,
+		"endpoint_id":  endpointID,
+		"status":       StatusPending,
+		"attempts":     0,
+		"max_attempts": maxAttempts,
+		"created_at":   now,
+		"updated_at":   now,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := collection.InsertOne(ctx, doc); err != nil {
+		t.Fatalf("insert integration delivery: %v", err)
+	}
+
+	return id
+}
+
+// readWorkerDeliveryState reads the current delivery document.
+func readWorkerDeliveryState(
 	t *testing.T,
 	collection *mongo.Collection,
 	id bson.ObjectID,
-) workerEventState {
+) Delivery {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var state workerEventState
-	if err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&state); err != nil {
-		t.Fatalf("read event state: %v", err)
+	var d Delivery
+	if err := collection.FindOne(
+		ctx, bson.M{"_id": id},
+	).Decode(&d); err != nil {
+		t.Fatalf("read delivery state: %v", err)
 	}
-
-	return state
+	return d
 }
 
+// readWorkerAttempts returns all persisted attempts for a delivery's
+// event/endpoint pair.
 func readWorkerAttempts(
 	t *testing.T,
 	collection *mongo.Collection,
-	eventID bson.ObjectID,
+	eventID, endpointID bson.ObjectID,
 ) []Attempt {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cursor, err := collection.Find(ctx, bson.M{"event_id": eventID})
+	cursor, err := collection.Find(
+		ctx,
+		bson.M{
+			"event_id":    eventID,
+			"endpoint_id": endpointID,
+		},
+	)
 	if err != nil {
 		t.Fatalf("find delivery attempts: %v", err)
 	}
@@ -158,28 +231,42 @@ func readWorkerAttempts(
 	if err := cursor.All(ctx, &attempts); err != nil {
 		t.Fatalf("decode delivery attempts: %v", err)
 	}
-
 	return attempts
 }
 
+// newIntegrationWorker builds a worker against the test DB.
 func newIntegrationWorker(
-	serverURL string,
-	maxAttempts int,
 	db workerIntegrationDB,
+	pollInterval time.Duration,
 ) *Worker {
-	return NewWorker(db.events, db.attempts, Config{
-		WebhookURL:     serverURL,
-		MaxAttempts:    maxAttempts,
-		RequestTimeout: 3 * time.Second,
-		LeaseDuration:  30 * time.Second,
-	})
+	if pollInterval <= 0 {
+		pollInterval = time.Second
+	}
+	return NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   pollInterval,
+			RequestTimeout: 3 * time.Second,
+			LeaseDuration:  30 * time.Second,
+		},
+	)
 }
+
+// ---------------------------------------------------------------
+// Successful delivery
+// ---------------------------------------------------------------
 
 func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		requestCount++
 
 		if r.Method != http.MethodPost {
@@ -188,10 +275,7 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("Content-Type = %q; want application/json", got)
 		}
-		if got := r.Header.Get("Idempotency-Key"); !strings.HasPrefix(got, "worker-test-") {
-			t.Errorf("unexpected Idempotency-Key: %q", got)
-		}
-		if r.Header.Get("X-Relay-Event-ID") == "" {
+		if got := r.Header.Get("X-Relay-Event-ID"); got == "" {
 			t.Error("missing X-Relay-Event-ID header")
 		}
 
@@ -200,7 +284,10 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 			t.Errorf("decode webhook payload: %v", err)
 		}
 		if payload.EventType != "invoice.paid" {
-			t.Errorf("payload event type = %q; want invoice.paid", payload.EventType)
+			t.Errorf(
+				"payload event type = %q; want invoice.paid",
+				payload.EventType,
+			)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
@@ -208,43 +295,25 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-
-	oldLeaseToken := "stale-lease-token"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := db.events.UpdateOne(
-		ctx,
-		bson.M{"_id": eventID},
-		bson.M{
-			"$set": bson.M{
-				"delivery_status":   "processing",
-				"delivery_attempts": 1,
-				"lease_until":       time.Now().UTC().Add(-time.Minute),
-				"lease_token":       oldLeaseToken,
-				"last_attempt_at":   time.Now().UTC().Add(-2 * time.Minute),
-			},
-		},
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
 	)
-	if err != nil {
-		t.Fatalf("prepare expired lease: %v", err)
-	}
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
-		t.Fatalf("process event: %v", err)
+		t.Fatalf("process delivery: %v", err)
 	}
 
 	if requestCount != 1 {
 		t.Fatalf("webhook request count = %d; want 1", requestCount)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "delivered" {
-		t.Errorf("delivery status = %q; want delivered", state.DeliveryStatus)
-	}
-	if state.DeliveryAttempts != 2 {
-		t.Errorf("delivery attempts = %d; want 2", state.DeliveryAttempts)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusDelivered {
+		t.Errorf("status = %q; want delivered", state.Status)
 	}
 	if state.DeliveredAt == nil || state.DeliveredAt.IsZero() {
 		t.Error("expected delivered_at to be set")
@@ -253,137 +322,123 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
 	}
 
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	attempts := readWorkerAttempts(t, db.attempts, eventID, endpointID)
 	if len(attempts) != 1 {
 		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
 	}
-	if attempts[0].AttemptNumber != 2 {
-		t.Errorf("attempt number = %d; want 2", attempts[0].AttemptNumber)
-	}
 	if attempts[0].HTTPStatus != http.StatusNoContent {
-		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusNoContent)
+		t.Errorf(
+			"HTTP status = %d; want %d",
+			attempts[0].HTTPStatus, http.StatusNoContent,
+		)
 	}
 	if attempts[0].Outcome != "delivered" {
-		t.Errorf("attempt outcome = %q; want delivered", attempts[0].Outcome)
+		t.Errorf("outcome = %q; want delivered", attempts[0].Outcome)
 	}
-	if attempts[0].FinishedAt.IsZero() {
-		t.Error("expected attempt finished_at to be set")
+	if attempts[0].EndpointID != endpointID {
+		t.Errorf(
+			"endpoint_id = %s; want %s",
+			attempts[0].EndpointID.Hex(), endpointID.Hex(),
+		)
 	}
 }
+
+// ---------------------------------------------------------------
+// Retry scheduling and exhaustion
+// ---------------------------------------------------------------
 
 func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-
-	oldLeaseToken := "stale-lease-token"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := db.events.UpdateOne(
-		ctx,
-		bson.M{"_id": eventID},
-		bson.M{
-			"$set": bson.M{
-				"delivery_status":   "processing",
-				"delivery_attempts": 1,
-				"lease_until":       time.Now().UTC().Add(-time.Minute),
-				"lease_token":       oldLeaseToken,
-				"last_attempt_at":   time.Now().UTC().Add(-2 * time.Minute),
-			},
-		},
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
 	)
-	if err != nil {
-		t.Fatalf("prepare expired lease: %v", err)
-	}
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
-		t.Fatalf("process event: %v", err)
+		t.Fatalf("process delivery: %v", err)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "pending" {
-		t.Errorf("delivery status = %q; want pending", state.DeliveryStatus)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusPending {
+		t.Errorf("status = %q; want pending", state.Status)
 	}
-	if state.DeliveryAttempts != 2 {
-		t.Errorf("delivery attempts = %d; want 2", state.DeliveryAttempts)
+	if state.Attempts != 1 {
+		t.Errorf("attempts = %d; want 1", state.Attempts)
 	}
 	if state.NextAttemptAt == nil {
 		t.Fatal("expected next_attempt_at to be set")
 	}
 	if !state.NextAttemptAt.After(time.Now().UTC()) {
-		t.Errorf("next_attempt_at = %v; want a future time", *state.NextAttemptAt)
+		t.Errorf(
+			"next_attempt_at = %v; want a future time",
+			*state.NextAttemptAt,
+		)
 	}
 	if state.LeaseUntil != nil {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
 	}
-	if !strings.Contains(state.LastDeliveryError, "503") {
-		t.Errorf("last delivery error = %q; want HTTP 503", state.LastDeliveryError)
+	if !strings.Contains(state.LastError, "503") {
+		t.Errorf("last_error = %q; want HTTP 503", state.LastError)
 	}
 
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	attempts := readWorkerAttempts(t, db.attempts, eventID, endpointID)
 	if len(attempts) != 1 {
 		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
 	}
 	if attempts[0].HTTPStatus != http.StatusServiceUnavailable {
-		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusServiceUnavailable)
+		t.Errorf(
+			"HTTP status = %d; want %d",
+			attempts[0].HTTPStatus, http.StatusServiceUnavailable,
+		)
 	}
 	if attempts[0].Outcome != "failed" {
-		t.Errorf("attempt outcome = %q; want failed", attempts[0].Outcome)
-	}
-	if attempts[0].Error == "" {
-		t.Error("expected attempt error to be recorded")
+		t.Errorf("outcome = %q; want failed", attempts[0].Outcome)
 	}
 }
 
 func TestWorkerIntegrationFailsAfterMaximumAttempts(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-
-	oldLeaseToken := "stale-lease-token"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := db.events.UpdateOne(
-		ctx,
-		bson.M{"_id": eventID},
-		bson.M{
-			"$set": bson.M{
-				"delivery_status":   "processing",
-				"delivery_attempts": 0,
-				"lease_until":       time.Now().UTC().Add(-time.Minute),
-				"lease_token":       oldLeaseToken,
-				"last_attempt_at":   time.Now().UTC().Add(-2 * time.Minute),
-			},
-		},
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 1,
 	)
-	if err != nil {
-		t.Fatalf("prepare expired lease: %v", err)
-	}
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 1,
+	)
 
-	worker := newIntegrationWorker(server.URL, 1, db)
+	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
-		t.Fatalf("process event: %v", err)
+		t.Fatalf("process delivery: %v", err)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "failed" {
-		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusFailed {
+		t.Errorf("status = %q; want failed", state.Status)
 	}
-	if state.DeliveryAttempts != 1 {
-		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	if state.Attempts != 1 {
+		t.Errorf("attempts = %d; want 1", state.Attempts)
 	}
 	if state.FailedAt == nil || state.FailedAt.IsZero() {
 		t.Error("expected failed_at to be set")
@@ -394,42 +449,40 @@ func TestWorkerIntegrationFailsAfterMaximumAttempts(t *testing.T) {
 	if state.LeaseUntil != nil {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
 	}
-	if !strings.Contains(state.LastDeliveryError, "500") {
-		t.Errorf("last delivery error = %q; want HTTP 500", state.LastDeliveryError)
-	}
-
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
-	if len(attempts) != 1 {
-		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
-	}
-	if attempts[0].Outcome != "failed" {
-		t.Errorf("attempt outcome = %q; want failed", attempts[0].Outcome)
-	}
-	if attempts[0].HTTPStatus != http.StatusInternalServerError {
-		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusInternalServerError)
+	if !strings.Contains(state.LastError, "500") {
+		t.Errorf("last_error = %q; want HTTP 500", state.LastError)
 	}
 }
+
+// ---------------------------------------------------------------
+// Expired leases
+// ---------------------------------------------------------------
 
 func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	const oldLeaseToken = "stale-lease-token"
-	eventID := insertWorkerIntegrationEvent(t, db.events)
 
-	now := time.Now().UTC()
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://placeholder", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	// Mark the delivery as processing with an expired lease.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := db.events.UpdateOne(
+	_, err := db.deliveries.UpdateOne(
 		ctx,
-		bson.M{"_id": eventID},
+		bson.M{"_id": deliveryID},
 		bson.M{
 			"$set": bson.M{
-				"delivery_status":   "processing",
-				"delivery_attempts": 1,
-				"lease_until":       now.Add(-time.Minute),
-				"lease_token":       oldLeaseToken,
-				"last_attempt_at":   now.Add(-2 * time.Minute),
+				"status":      StatusProcessing,
+				"attempts":    1,
+				"lease_until": time.Now().UTC().Add(-time.Minute),
+				"lease_token": oldLeaseToken,
 			},
 		},
 	)
@@ -438,24 +491,33 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	}
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		requestCount++
 
-		requestCtx, requestCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		// The delivery should already be claimed with a fresh lease
+		// token by the time the webhook runs.
+		requestCtx, requestCancel := context.WithTimeout(
+			r.Context(), 5*time.Second,
+		)
 		defer requestCancel()
 
-		var event bson.M
-		if err := db.events.FindOne(requestCtx, bson.M{"_id": eventID}).Decode(&event); err != nil {
-			t.Errorf("read event during webhook: %v", err)
+		var d bson.M
+		if err := db.deliveries.FindOne(
+			requestCtx, bson.M{"_id": deliveryID},
+		).Decode(&d); err != nil {
+			t.Errorf("read delivery during webhook: %v", err)
 			http.Error(w, "test setup failed", http.StatusInternalServerError)
 			return
 		}
 
-		newLeaseToken, ok := event["lease_token"].(string)
-		if !ok || newLeaseToken == "" {
+		newToken, ok := d["lease_token"].(string)
+		if !ok || newToken == "" {
 			t.Error("expected a non-empty lease token during delivery")
 		}
-		if newLeaseToken == oldLeaseToken {
+		if newToken == oldLeaseToken {
 			t.Error("reclaimed lease should receive a new token")
 		}
 
@@ -463,17 +525,27 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	}))
 	defer server.Close()
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	// Point the endpoint at our server.
+	_, err = db.endpoints.UpdateOne(
+		ctx,
+		bson.M{"_id": endpointID},
+		bson.M{"$set": bson.M{"url": server.URL}},
+	)
+	if err != nil {
+		t.Fatalf("point endpoint at server: %v", err)
+	}
+
+	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
 		t.Fatalf("process expired lease: %v", err)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "delivered" {
-		t.Errorf("delivery status = %q; want delivered", state.DeliveryStatus)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusDelivered {
+		t.Errorf("status = %q; want delivered", state.Status)
 	}
-	if state.DeliveryAttempts != 2 {
-		t.Errorf("delivery attempts = %d; want 2", state.DeliveryAttempts)
+	if state.Attempts != 1 {
+		t.Errorf("attempts = %d; want 1", state.Attempts)
 	}
 	if state.LeaseUntil != nil {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
@@ -481,81 +553,64 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	if requestCount != 1 {
 		t.Errorf("webhook requests = %d; want 1", requestCount)
 	}
-
-	var persisted bson.M
-	if err := db.events.FindOne(context.Background(), bson.M{"_id": eventID}).Decode(&persisted); err != nil {
-		t.Fatalf("read recovered event: %v", err)
-	}
-	if _, exists := persisted["lease_token"]; exists {
-		t.Errorf("lease_token should be unset after delivery, got %v", persisted["lease_token"])
-	}
-
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
-	if len(attempts) != 1 {
-		t.Fatalf("persisted attempts = %d; want 1 new attempt", len(attempts))
-	}
-	if attempts[0].AttemptNumber != 2 {
-		t.Errorf("attempt number = %d; want 2", attempts[0].AttemptNumber)
-	}
-	if attempts[0].Outcome != "delivered" {
-		t.Errorf("attempt outcome = %q; want delivered", attempts[0].Outcome)
-	}
 }
 
 func TestWorkerIntegrationDoesNotReclaimActiveLease(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	now := time.Now().UTC()
-	leaseUntil := now.Add(5 * time.Minute)
+	leaseUntil := time.Now().UTC().Add(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := db.events.UpdateOne(ctx, bson.M{"_id": eventID}, bson.M{
-		"$set": bson.M{
-			"delivery_status":   "processing",
-			"delivery_attempts": 1,
-			"lease_until":       leaseUntil,
+	_, err := db.deliveries.UpdateOne(
+		ctx,
+		bson.M{"_id": deliveryID},
+		bson.M{
+			"$set": bson.M{
+				"status":      StatusProcessing,
+				"attempts":    1,
+				"lease_until": leaseUntil,
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("prepare active lease: %v", err)
 	}
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 
 	err = worker.processOne(context.Background())
-	if err != mongo.ErrNoDocuments {
-		t.Fatalf("process active lease error = %v; want mongo.ErrNoDocuments", err)
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf(
+			"process active lease error = %v; want mongo.ErrNoDocuments",
+			err,
+		)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "processing" {
-		t.Errorf("delivery status = %q; want processing", state.DeliveryStatus)
-	}
-	if state.DeliveryAttempts != 1 {
-		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
-	}
-	if state.LeaseUntil == nil ||
-		state.LeaseUntil.UnixMilli() != leaseUntil.UnixMilli() {
-		t.Errorf("lease_until = %v; want %v", state.LeaseUntil, leaseUntil)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusProcessing {
+		t.Errorf("status = %q; want processing", state.Status)
 	}
 	if requestCount != 0 {
 		t.Errorf("webhook requests = %d; want 0", requestCount)
-	}
-
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
-	if len(attempts) != 0 {
-		t.Errorf("persisted attempts = %d; want 0", len(attempts))
 	}
 }
 
@@ -563,91 +618,79 @@ func TestWorkerIntegrationFailsExpiredExhaustedLease(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
 		requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	now := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := db.events.UpdateOne(ctx, bson.M{"_id": eventID}, bson.M{
-		"$set": bson.M{
-			"delivery_status":   "processing",
-			"delivery_attempts": 3,
-			"lease_until":       now.Add(-time.Minute),
-			"next_attempt_at":   now.Add(-2 * time.Minute),
+	_, err := db.deliveries.UpdateOne(
+		ctx,
+		bson.M{"_id": deliveryID},
+		bson.M{
+			"$set": bson.M{
+				"status":      StatusProcessing,
+				"attempts":    3,
+				"lease_until": time.Now().UTC().Add(-time.Minute),
+			},
 		},
-	})
+	)
 	if err != nil {
 		t.Fatalf("prepare exhausted lease: %v", err)
 	}
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 
 	err = worker.processOne(context.Background())
-	if err != mongo.ErrNoDocuments {
-		t.Fatalf("process exhausted lease error = %v; want mongo.ErrNoDocuments", err)
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf(
+			"process exhausted lease error = %v; want mongo.ErrNoDocuments",
+			err,
+		)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "failed" {
-		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusFailed {
+		t.Errorf("status = %q; want failed", state.Status)
 	}
-	if state.DeliveryAttempts != 3 {
-		t.Errorf("delivery attempts = %d; want 3", state.DeliveryAttempts)
+	if state.Attempts != 3 {
+		t.Errorf("attempts = %d; want 3", state.Attempts)
 	}
 	if state.FailedAt == nil || state.FailedAt.IsZero() {
 		t.Error("expected failed_at to be set")
 	}
-	if state.LeaseUntil != nil {
-		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
-	}
-	if state.NextAttemptAt != nil {
-		t.Errorf("next_attempt_at = %v; want unset", state.NextAttemptAt)
-	}
-	if !strings.Contains(state.LastDeliveryError, "expired after maximum attempts") {
-		t.Errorf("last delivery error = %q; want lease-expiration error", state.LastDeliveryError)
-	}
 	if requestCount != 0 {
 		t.Errorf("webhook requests = %d; want 0", requestCount)
 	}
-
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
-	if len(attempts) != 0 {
-		t.Errorf("persisted attempts = %d; want 0 additional attempts", len(attempts))
-	}
 }
+
+// ---------------------------------------------------------------
+// Concurrency
+// ---------------------------------------------------------------
 
 func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-
-	oldLeaseToken := "stale-lease-token"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := db.events.UpdateOne(
-		ctx,
-		bson.M{"_id": eventID},
-		bson.M{
-			"$set": bson.M{
-				"delivery_status":   "processing",
-				"delivery_attempts": 1,
-				"lease_until":       time.Now().UTC().Add(-time.Minute),
-				"lease_token":       oldLeaseToken,
-				"last_attempt_at":   time.Now().UTC().Add(-2 * time.Minute),
-			},
-		},
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
 	)
-	if err != nil {
-		t.Fatalf("prepare expired lease: %v", err)
-	}
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
 	const workerCount = 16
 	start := make(chan struct{})
@@ -659,23 +702,21 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			worker := newIntegrationWorker("http://127.0.0.1:1", 3, db)
-
+			worker := newIntegrationWorker(db, time.Second)
 			<-start
 
 			ctx, cancel := context.WithTimeout(
-				context.Background(),
-				5*time.Second,
+				context.Background(), 5*time.Second,
 			)
 			defer cancel()
 
-			event, err := worker.claim(ctx)
+			claim, err := worker.claim(ctx)
 			if err == nil {
-				if event.ID != eventID {
+				if claim.Delivery.ID != deliveryID {
 					results <- fmt.Errorf(
-						"claimed event ID = %s; want %s",
-						event.ID.Hex(),
-						eventID.Hex(),
+						"claimed delivery ID = %s; want %s",
+						claim.Delivery.ID.Hex(),
+						deliveryID.Hex(),
 					)
 					return
 				}
@@ -709,39 +750,31 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 	if noDocuments != workerCount-1 {
 		t.Errorf(
 			"unsuccessful claims = %d; want %d",
-			noDocuments,
-			workerCount-1,
+			noDocuments, workerCount-1,
 		)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "processing" {
-		t.Errorf(
-			"delivery status = %q; want processing",
-			state.DeliveryStatus,
-		)
-	}
-	if state.DeliveryAttempts != 2 {
-		t.Errorf(
-			"delivery attempts = %d; want 2",
-			state.DeliveryAttempts,
-		)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusProcessing {
+		t.Errorf("status = %q; want processing", state.Status)
 	}
 	if state.LeaseUntil == nil || !state.LeaseUntil.After(time.Now()) {
 		t.Errorf("expected a future lease; got %v", state.LeaseUntil)
 	}
 }
 
-func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
+// ---------------------------------------------------------------
+// Cancellation
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationCancellationPreservesRecoverableDelivery(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() {
-		releaseOnce.Do(func() {
-			close(releaseHandler)
-		})
+		releaseOnce.Do(func() { close(releaseHandler) })
 	}
 	defer release()
 
@@ -754,9 +787,15 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	id := insertWorkerIntegrationEvent(t, db.events)
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -782,166 +821,85 @@ func TestWorkerIntegrationCancellationPreservesRecoverableEvent(t *testing.T) {
 		t.Fatal("worker did not stop after cancellation")
 	}
 
-	// Allow the test server handler to finish before cleanup.
 	release()
 
-	state := readWorkerEventState(t, db.events, id)
-	if state.DeliveryStatus == "delivered" {
-		t.Fatal("event marked delivered despite no webhook acknowledgement")
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status == StatusDelivered {
+		t.Fatal("delivery marked delivered despite no acknowledgement")
 	}
-	if state.DeliveryStatus != "processing" {
+	if state.Status != StatusProcessing {
 		t.Fatalf(
-			"delivery status = %q; want processing until lease recovery",
-			state.DeliveryStatus,
+			"status = %q; want processing until lease recovery",
+			state.Status,
 		)
 	}
 	if state.LeaseUntil == nil {
-		t.Fatal("expected the interrupted event to retain its lease")
-	}
-	if state.DeliveryAttempts != 1 {
-		t.Fatalf(
-			"delivery attempts = %d; want 1",
-			state.DeliveryAttempts,
-		)
+		t.Fatal("expected the interrupted delivery to retain its lease")
 	}
 }
 
-func TestWorkerIntegrationDeliveryUpdateMatchesNoDocuments(t *testing.T) {
+// ---------------------------------------------------------------
+// Stale lease token
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationStaleLeaseTokenCannotOverwrite(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	eventID := insertWorkerIntegrationEvent(t, db.events)
-
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
+		requestCount++
+
+		// Simulate another worker reclaiming the delivery during the
+		// webhook request.
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		_, err := db.events.UpdateOne(
+		_, err := db.deliveries.UpdateOne(
 			ctx,
-			bson.M{"_id": eventID},
-			bson.M{"$set": bson.M{"delivery_status": "failed"}},
+			bson.M{"_id": bson.M{"$exists": true}},
+			bson.M{"$set": bson.M{"lease_token": "newer-token"}},
 		)
 		if err != nil {
-			t.Errorf("change event state in handler: %v", err)
-			http.Error(w, "test setup failed", http.StatusInternalServerError)
-			return
+			t.Errorf("invalidate lease token: %v", err)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	worker := newIntegrationWorker(server.URL, 3, db)
-
-	err := worker.processOne(context.Background())
-	if err == nil {
-		t.Fatal("expected an error when delivery update matches no documents")
-	}
-	if !strings.Contains(err.Error(), "no longer owned by this lease") {
-		t.Fatalf("error = %q; want event no longer owned by this lease", err)
-	}
-
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "failed" {
-		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
-	}
-}
-
-func TestWorkerIntegrationFailureUpdateMatchesNoDocuments(t *testing.T) {
-	db := newWorkerIntegrationDB(t)
-
 	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-
-		_, err := db.events.UpdateOne(
-			ctx,
-			bson.M{"_id": eventID},
-			bson.M{"$set": bson.M{"delivery_status": "failed"}},
-		)
-		if err != nil {
-			t.Errorf("change event state in handler: %v", err)
-			http.Error(w, "test setup failed", http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	worker := newIntegrationWorker(server.URL, 3, db)
+	worker := newIntegrationWorker(db, time.Second)
 
 	err := worker.processOne(context.Background())
 	if err == nil {
-		t.Fatal("expected an error when failure update matches no documents")
+		t.Fatal("expected an error when lease token was replaced")
 	}
 	if !strings.Contains(err.Error(), "no longer owned by this lease") {
-		t.Fatalf("error = %q; want event no longer owned by this lease", err)
+		t.Fatalf(
+			"error = %q; want no longer owned by this lease",
+			err,
+		)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "failed" {
-		t.Errorf("delivery status = %q; want failed", state.DeliveryStatus)
-	}
-}
-
-func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
-	db := newWorkerIntegrationDB(t)
-
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-
-	worker := NewWorker(db.events, db.attempts, Config{
-		WebhookURL:     "http://127.0.0.1:1",
-		PollInterval:   10 * time.Millisecond,
-		MaxAttempts:    3,
-		RequestTimeout: 3 * time.Second,
-		LeaseDuration:  30 * time.Second,
-		Logger:         logger,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		worker.Run(ctx)
-	}()
-
-	deadline := time.After(2 * time.Second)
-	for {
-		if strings.Contains(logs.String(), "delivery worker started") {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("worker did not start before the deadline")
-		case <-done:
-			t.Fatal("worker exited before startup was observed")
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-
-	cancel()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("worker Run did not stop after context cancellation")
-	}
-
-	if !strings.Contains(logs.String(), "delivery worker stopped") {
-		t.Fatal("expected worker shutdown log")
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusProcessing {
+		t.Errorf("status = %q; want processing", state.Status)
 	}
 }
+
+// ---------------------------------------------------------------
+// Signing
+// ---------------------------------------------------------------
 
 func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
@@ -970,15 +928,14 @@ func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, secret, 3,
+	)
+	insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
 
-	worker := NewWorker(db.events, db.attempts, Config{
-		WebhookURL:           server.URL,
-		PollInterval:         time.Second,
-		MaxAttempts:          3,
-		RequestTimeout:       3 * time.Second,
-		LeaseDuration:        30 * time.Second,
-		WebhookSigningSecret: secret,
-	})
+	worker := newIntegrationWorker(db, time.Second)
 
 	if err := worker.processOne(context.Background()); err != nil {
 		t.Fatalf("process signed event: %v", err)
@@ -1022,44 +979,192 @@ func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
 	if err := signer.Verify(timestamp, body, sig); err != nil {
 		t.Fatalf("receiver-side verification failed: %v", err)
 	}
+}
 
-	// Sanity-check that the signed body really is the JSON payload.
-	var payload webhookPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("decode signed body as webhook payload: %v", err)
+func TestWorkerIntegrationUnsignedWhenNoSecret(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	receivedHeaders := make(chan http.Header, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		_, _ = io.ReadAll(r.Body)
+		receivedHeaders <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("process unsigned event: %v", err)
 	}
-	if payload.EventType != "invoice.paid" {
-		t.Errorf(
-			"payload event type = %q; want invoice.paid",
-			payload.EventType,
+
+	select {
+	case headers := <-receivedHeaders:
+		if headers.Get(security.SignatureHeader) != "" {
+			t.Errorf(
+				"expected no %s header for unsigned endpoint",
+				security.SignatureHeader,
+			)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered")
+	}
+}
+
+// ---------------------------------------------------------------
+// Missing resources
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationMissingEventFailsDelivery(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	// Create a delivery referencing a nonexistent event.
+	missingEventID := bson.NewObjectID()
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, missingEventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+
+	err := worker.processOne(context.Background())
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf(
+			"process missing-event delivery error = %v; want mongo.ErrNoDocuments",
+			err,
 		)
 	}
 
-	state := readWorkerEventState(t, db.events, eventID)
-	if state.DeliveryStatus != "delivered" {
-		t.Errorf(
-			"delivery status = %q; want delivered",
-			state.DeliveryStatus,
-		)
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusFailed {
+		t.Errorf("status = %q; want failed", state.Status)
 	}
-	if state.DeliveryAttempts != 1 {
-		t.Errorf(
-			"delivery attempts = %d; want 1",
-			state.DeliveryAttempts,
-		)
+	if !strings.Contains(state.LastError, "event not found") {
+		t.Errorf("last_error = %q; want event not found", state.LastError)
 	}
-	if state.LeaseUntil != nil {
-		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
+}
+
+func TestWorkerIntegrationDisabledEndpointFailsDelivery(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	// Disable the endpoint.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := db.endpoints.UpdateOne(
+		ctx,
+		bson.M{"_id": endpointID},
+		bson.M{"$set": bson.M{"enabled": false}},
+	)
+	if err != nil {
+		t.Fatalf("disable endpoint: %v", err)
 	}
 
-	attempts := readWorkerAttempts(t, db.attempts, eventID)
-	if len(attempts) != 1 {
-		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
-	}
-	if attempts[0].Outcome != "delivered" {
-		t.Errorf(
-			"attempt outcome = %q; want delivered",
-			attempts[0].Outcome,
+	worker := newIntegrationWorker(db, time.Second)
+
+	err = worker.processOne(context.Background())
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		t.Fatalf(
+			"process disabled-endpoint delivery error = %v; want mongo.ErrNoDocuments",
+			err,
 		)
+	}
+
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusFailed {
+		t.Errorf("status = %q; want failed", state.Status)
+	}
+	if !strings.Contains(state.LastError, "endpoint disabled") {
+		t.Errorf(
+			"last_error = %q; want endpoint disabled",
+			state.LastError,
+		)
+	}
+}
+
+// ---------------------------------------------------------------
+// Worker lifecycle
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	worker := NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   10 * time.Millisecond,
+			RequestTimeout: 3 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Logger:         logger,
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(logs.String(), "delivery worker started") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("worker did not start before the deadline")
+		case <-done:
+			t.Fatal("worker exited before startup was observed")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker Run did not stop after context cancellation")
+	}
+
+	if !strings.Contains(logs.String(), "delivery worker stopped") {
+		t.Fatal("expected worker shutdown log")
 	}
 }

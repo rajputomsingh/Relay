@@ -313,14 +313,14 @@ func run() error {
 	if cfg.WebhookURL != "" {
 		worker := delivery.NewWorker(
 			eventsCollection,
+			endpointsCollection,
+			deliveriesCollection,
 			attemptsCollection,
 			delivery.Config{
-				WebhookURL:           cfg.WebhookURL,
-				PollInterval:         time.Duration(cfg.WorkerPollSeconds) * time.Second,
-				MaxAttempts:          cfg.MaxDeliveryAttempts,
-				RequestTimeout:       10 * time.Second,
-				LeaseDuration:        30 * time.Second,
-				WebhookSigningSecret: cfg.WebhookSigningSecret,
+				PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
+				RequestTimeout: 10 * time.Second,
+				LeaseDuration:  30 * time.Second,
+				Logger:         slog.Default(),
 			},
 		)
 
@@ -329,7 +329,7 @@ func run() error {
 			worker.Run(stopCtx)
 		}()
 
-		slog.Info("webhook delivery enabled")
+		slog.Info("multi-endpoint delivery worker started")
 	} else {
 		close(workerDone)
 		slog.Info(
