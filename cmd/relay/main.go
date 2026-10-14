@@ -269,11 +269,12 @@ func run() error {
 			eventsCollection,
 			attemptsCollection,
 			delivery.Config{
-				WebhookURL:     cfg.WebhookURL,
-				PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
-				MaxAttempts:    cfg.MaxDeliveryAttempts,
-				RequestTimeout: 10 * time.Second,
-				LeaseDuration:  30 * time.Second,
+				WebhookURL:           cfg.WebhookURL,
+				PollInterval:         time.Duration(cfg.WorkerPollSeconds) * time.Second,
+				MaxAttempts:          cfg.MaxDeliveryAttempts,
+				RequestTimeout:       10 * time.Second,
+				LeaseDuration:        30 * time.Second,
+				WebhookSigningSecret: cfg.WebhookSigningSecret,
 			},
 		)
 
