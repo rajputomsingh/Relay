@@ -6,14 +6,15 @@ func setValidEnvironment(t *testing.T) {
 	t.Helper()
 
 	values := map[string]string{
-		"APP_ENV":                     "development",
-		"PORT":                        "8080",
-		"MONGODB_URI":                 "mongodb://localhost:27017",
-		"MONGODB_DATABASE":            "relay",
-		"RELAY_API_KEY":               "0123456789abcdef0123456789abcdef",
-		"RELAY_WEBHOOK_URL":           "",
-		"RELAY_WORKER_POLL_SECONDS":   "2",
-		"RELAY_MAX_DELIVERY_ATTEMPTS": "8",
+		"APP_ENV":                      "development",
+		"PORT":                         "8080",
+		"MONGODB_URI":                  "mongodb://localhost:27017",
+		"MONGODB_DATABASE":             "relay",
+		"RELAY_API_KEY":                "0123456789abcdef0123456789abcdef",
+		"RELAY_WEBHOOK_URL":            "",
+		"RELAY_WORKER_POLL_SECONDS":    "2",
+		"RELAY_MAX_DELIVERY_ATTEMPTS":  "8",
+		"RELAY_WEBHOOK_SIGNING_SECRET": "",
 	}
 
 	for key, value := range values {
@@ -182,5 +183,58 @@ func TestLoadAcceptsHTTPSWebhookInProduction(t *testing.T) {
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load() rejected valid production configuration: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidSigningConfiguration(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func()
+	}{
+		{
+			name: "signing secret too short",
+			change: func() {
+				t.Setenv("RELAY_WEBHOOK_URL", "https://example.com/hook")
+				t.Setenv("RELAY_WEBHOOK_SIGNING_SECRET", "short")
+			},
+		},
+		{
+			name: "signing secret without webhook URL",
+			change: func() {
+				t.Setenv("RELAY_WEBHOOK_URL", "")
+				t.Setenv(
+					"RELAY_WEBHOOK_SIGNING_SECRET",
+					"0123456789abcdef0123456789abcdef",
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			tt.change()
+
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() expected an error, got nil")
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsValidSigningConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_WEBHOOK_URL", "https://example.com/hook")
+	t.Setenv(
+		"RELAY_WEBHOOK_SIGNING_SECRET",
+		"0123456789abcdef0123456789abcdef",
+	)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.WebhookSigningSecret == "" {
+		t.Fatal("expected signing secret to be loaded")
 	}
 }
