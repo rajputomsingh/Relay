@@ -6,3 +6,5 @@
 coverage.out
 .vscode/
 .idea/
+# Local configuration. Never commit.
+.env
