@@ -98,3 +98,44 @@ func (e *Endpoint) Validate() error {
 
 	return nil
 }
+
+// Update describes a partial update to an endpoint.
+// Nil fields are left unchanged.
+type Update struct {
+	Name          *string      `json:"name,omitempty"`
+	URL           *string      `json:"url,omitempty"`
+	SigningSecret *string      `json:"signing_secret,omitempty"`
+	EventFilter   *EventFilter `json:"event_filter,omitempty"`
+	MaxAttempts   *int         `json:"max_attempts,omitempty"`
+	Enabled       *bool        `json:"enabled,omitempty"`
+}
+
+// Apply merges the update into the endpoint and validates the result.
+func (u Update) Apply(e *Endpoint) error {
+	if u.Name != nil {
+		e.Name = *u.Name
+	}
+	if u.URL != nil {
+		e.URL = *u.URL
+	}
+	if u.SigningSecret != nil {
+		e.SigningSecret = *u.SigningSecret
+	}
+	if u.EventFilter != nil {
+		e.EventFilter = *u.EventFilter
+	}
+	if u.MaxAttempts != nil {
+		e.MaxAttempts = *u.MaxAttempts
+	}
+	if u.Enabled != nil {
+		e.Enabled = *u.Enabled
+		if !e.Enabled && e.DisabledAt == nil {
+			now := time.Now().UTC()
+			e.DisabledAt = &now
+		}
+		if e.Enabled {
+			e.DisabledAt = nil
+		}
+	}
+	return e.Validate()
+}
