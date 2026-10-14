@@ -275,6 +275,7 @@ func run() error {
 	inspectionHandler := handlers.NewInspectionHandler(
 		eventsCollection,
 		attemptsCollection,
+		deliveriesCollection,
 		cfg.RelayAPIKey,
 	)
 

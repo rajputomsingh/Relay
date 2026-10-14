@@ -15,12 +15,14 @@ import (
 )
 
 type fakeInspectionStore struct {
-	event       eventInspectionRecord
-	eventErr    error
-	attempts    []delivery.Attempt
-	attemptsErr error
-	lastLimit   int
-	lastCursor  *attemptCursor
+	event         eventInspectionRecord
+	eventErr      error
+	attempts      []delivery.Attempt
+	attemptsErr   error
+	lastLimit     int
+	lastCursor    *attemptCursor
+	deliveries    []deliveryState
+	deliveriesErr error
 }
 
 func (f *fakeInspectionStore) GetEvent(
@@ -54,6 +56,16 @@ func (f *fakeInspectionStore) ListAttempts(
 	}
 
 	return f.attempts, nil
+}
+
+func (f *fakeInspectionStore) ListDeliveries(
+	_ context.Context,
+	_ bson.ObjectID,
+) ([]deliveryState, error) {
+	if f.deliveriesErr != nil {
+		return nil, f.deliveriesErr
+	}
+	return f.deliveries, nil
 }
 
 func newInspectionTestHandler(store inspectionStore) *InspectionHandler {
@@ -356,6 +368,125 @@ func TestInspectionAttemptsStorageFailure(t *testing.T) {
 	mux.ServeHTTP(recorder, newInspectionRequest(
 		http.MethodGet,
 		"/v1/events/"+eventID.Hex()+"/attempts",
+		testAPIKey,
+	))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", recorder.Code)
+	}
+}
+
+func TestInspectionDeliveriesSuccess(t *testing.T) {
+	eventID := bson.NewObjectID()
+	endpointA := bson.NewObjectID()
+	endpointB := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	store := &fakeInspectionStore{
+		event: eventInspectionRecord{ID: eventID},
+		deliveries: []deliveryState{
+			{
+				ID:          bson.NewObjectID(),
+				EventID:     eventID,
+				EndpointID:  endpointA,
+				Status:      "delivered",
+				Attempts:    1,
+				MaxAttempts: 3,
+				DeliveredAt: &now,
+				UpdatedAt:   now,
+			},
+			{
+				ID:          bson.NewObjectID(),
+				EventID:     eventID,
+				EndpointID:  endpointB,
+				Status:      "pending",
+				Attempts:    1,
+				MaxAttempts: 3,
+				LastError:   "connection refused",
+				UpdatedAt:   now,
+			},
+		},
+	}
+
+	handler := newInspectionTestHandler(store)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, newInspectionRequest(
+		http.MethodGet,
+		"/v1/events/"+eventID.Hex()+"/deliveries",
+		testAPIKey,
+	))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response eventDeliveriesResponse
+	decodeInspectionResponse(t, recorder, &response)
+
+	if response.EventID != eventID.Hex() {
+		t.Errorf("event_id = %q; want %q", response.EventID, eventID.Hex())
+	}
+	if len(response.Deliveries) != 2 {
+		t.Fatalf("expected 2 deliveries, got %d", len(response.Deliveries))
+	}
+}
+
+func TestInspectionDeliveriesUnauthorized(t *testing.T) {
+	eventID := bson.NewObjectID()
+	handler := newInspectionTestHandler(&fakeInspectionStore{
+		event: eventInspectionRecord{ID: eventID},
+	})
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, newInspectionRequest(
+		http.MethodGet,
+		"/v1/events/"+eventID.Hex()+"/deliveries",
+		"",
+	))
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recorder.Code)
+	}
+}
+
+func TestInspectionDeliveriesNotFound(t *testing.T) {
+	eventID := bson.NewObjectID()
+	handler := newInspectionTestHandler(&fakeInspectionStore{})
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, newInspectionRequest(
+		http.MethodGet,
+		"/v1/events/"+eventID.Hex()+"/deliveries",
+		testAPIKey,
+	))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", recorder.Code)
+	}
+}
+
+func TestInspectionDeliveriesStorageFailure(t *testing.T) {
+	eventID := bson.NewObjectID()
+	store := &fakeInspectionStore{
+		event:         eventInspectionRecord{ID: eventID},
+		deliveriesErr: errors.New("database unavailable"),
+	}
+
+	handler := newInspectionTestHandler(store)
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, newInspectionRequest(
+		http.MethodGet,
+		"/v1/events/"+eventID.Hex()+"/deliveries",
 		testAPIKey,
 	))
 

@@ -30,11 +30,13 @@ var errInspectionNotFound = errors.New("event not found")
 type inspectionStore interface {
 	GetEvent(context.Context, bson.ObjectID) (eventInspectionRecord, error)
 	ListAttempts(context.Context, bson.ObjectID, int, *attemptCursor) ([]delivery.Attempt, error)
+	ListDeliveries(context.Context, bson.ObjectID) ([]deliveryState, error)
 }
 
 type mongoInspectionStore struct {
-	events   *mongo.Collection
-	attempts *mongo.Collection
+	events     *mongo.Collection
+	attempts   *mongo.Collection
+	deliveries *mongo.Collection
 }
 
 type InspectionHandler struct {
@@ -90,6 +92,7 @@ type attemptHistoryResponse struct {
 type attemptResponse struct {
 	ID            string    `json:"id"`
 	EventID       string    `json:"event_id"`
+	EndpointID    string    `json:"endpoint_id,omitempty"`
 	AttemptNumber int       `json:"attempt_number"`
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at"`
@@ -98,15 +101,48 @@ type attemptResponse struct {
 	Outcome       string    `json:"outcome"`
 }
 
+type deliveryState struct {
+	ID            bson.ObjectID `bson:"_id"`
+	EventID       bson.ObjectID `bson:"event_id"`
+	EndpointID    bson.ObjectID `bson:"endpoint_id"`
+	Status        string        `bson:"status"`
+	Attempts      int           `bson:"attempts"`
+	MaxAttempts   int           `bson:"max_attempts"`
+	NextAttemptAt *time.Time    `bson:"next_attempt_at,omitempty"`
+	DeliveredAt   *time.Time    `bson:"delivered_at,omitempty"`
+	FailedAt      *time.Time    `bson:"failed_at,omitempty"`
+	LastError     string        `bson:"last_error,omitempty"`
+	UpdatedAt     time.Time     `bson:"updated_at"`
+}
+
+type deliveryStateResponse struct {
+	EndpointID    string     `json:"endpoint_id"`
+	Status        string     `json:"status"`
+	Attempts      int        `json:"attempts"`
+	MaxAttempts   int        `json:"max_attempts"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+	FailedAt      *time.Time `json:"failed_at,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type eventDeliveriesResponse struct {
+	EventID    string                  `json:"event_id"`
+	Deliveries []deliveryStateResponse `json:"deliveries"`
+}
+
 func NewInspectionHandler(
 	eventsCollection *mongo.Collection,
 	attemptsCollection *mongo.Collection,
+	deliveriesCollection *mongo.Collection,
 	apiKey string,
 ) *InspectionHandler {
 	return &InspectionHandler{
 		store: &mongoInspectionStore{
-			events:   eventsCollection,
-			attempts: attemptsCollection,
+			events:     eventsCollection,
+			attempts:   attemptsCollection,
+			deliveries: deliveriesCollection,
 		},
 		apiKey: apiKey,
 	}
@@ -115,6 +151,7 @@ func NewInspectionHandler(
 func (h *InspectionHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/events/{id}", h.getEvent)
 	mux.HandleFunc("GET /v1/events/{id}/attempts", h.getAttempts)
+	mux.HandleFunc("GET /v1/events/{id}/deliveries", h.getDeliveries)
 }
 
 func (h *InspectionHandler) authorized(w http.ResponseWriter, r *http.Request) bool {
@@ -123,7 +160,10 @@ func (h *InspectionHandler) authorized(w http.ResponseWriter, r *http.Request) b
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, prefix) ||
 		h.apiKey == "" ||
-		subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(header, prefix)), []byte(h.apiKey)) != 1 {
+		subtle.ConstantTimeCompare(
+			[]byte(strings.TrimPrefix(header, prefix)),
+			[]byte(h.apiKey),
+		) != 1 {
 		writeEventJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": "unauthorized",
 		})
@@ -217,7 +257,6 @@ func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), inspectionTimeout)
 	defer cancel()
 
-	// Check the parent event first so nonexistent event IDs consistently return 404.
 	if _, err := h.store.GetEvent(ctx, id); err != nil {
 		if errors.Is(err, errInspectionNotFound) {
 			writeEventJSON(w, http.StatusNotFound, map[string]any{
@@ -255,7 +294,7 @@ func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) 
 	}
 
 	for _, attempt := range attempts {
-		response.Attempts = append(response.Attempts, attemptResponse{
+		resp := attemptResponse{
 			ID:            attempt.ID.Hex(),
 			EventID:       attempt.EventID.Hex(),
 			AttemptNumber: attempt.AttemptNumber,
@@ -264,7 +303,11 @@ func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) 
 			DurationMS:    attempt.DurationMS,
 			HTTPStatus:    attempt.HTTPStatus,
 			Outcome:       attempt.Outcome,
-		})
+		}
+		if !attempt.EndpointID.IsZero() {
+			resp.EndpointID = attempt.EndpointID.Hex()
+		}
+		response.Attempts = append(response.Attempts, resp)
 	}
 
 	if hasMore && len(attempts) > 0 {
@@ -279,6 +322,71 @@ func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
+	}
+
+	writeEventJSON(w, http.StatusOK, response)
+}
+
+func (h *InspectionHandler) getDeliveries(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(w, r) {
+		return
+	}
+
+	id, err := parseEventID(r)
+	if err != nil {
+		writeEventJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid event ID",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), inspectionTimeout)
+	defer cancel()
+
+	if _, err := h.store.GetEvent(ctx, id); err != nil {
+		if errors.Is(err, errInspectionNotFound) {
+			writeEventJSON(w, http.StatusNotFound, map[string]any{
+				"error": "event not found",
+			})
+			return
+		}
+
+		log.Printf("event lookup for deliveries failed: %v", err)
+		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "delivery state temporarily unavailable",
+		})
+		return
+	}
+
+	deliveries, err := h.store.ListDeliveries(ctx, id)
+	if err != nil {
+		log.Printf("delivery state query failed: %v", err)
+		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "delivery state temporarily unavailable",
+		})
+		return
+	}
+
+	response := eventDeliveriesResponse{
+		EventID:    id.Hex(),
+		Deliveries: make([]deliveryStateResponse, 0, len(deliveries)),
+	}
+
+	for _, d := range deliveries {
+		response.Deliveries = append(
+			response.Deliveries,
+			deliveryStateResponse{
+				EndpointID:    d.EndpointID.Hex(),
+				Status:        d.Status,
+				Attempts:      d.Attempts,
+				MaxAttempts:   d.MaxAttempts,
+				NextAttemptAt: d.NextAttemptAt,
+				DeliveredAt:   d.DeliveredAt,
+				FailedAt:      d.FailedAt,
+				LastError:     d.LastError,
+				UpdatedAt:     d.UpdatedAt,
+			},
+		)
 	}
 
 	writeEventJSON(w, http.StatusOK, response)
@@ -347,6 +455,41 @@ func (s *mongoInspectionStore) ListAttempts(
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate attempts: %w", err)
+	}
+
+	return result, nil
+}
+
+func (s *mongoInspectionStore) ListDeliveries(
+	ctx context.Context,
+	eventID bson.ObjectID,
+) ([]deliveryState, error) {
+	rows, err := s.deliveries.Find(
+		ctx,
+		bson.M{"event_id": eventID},
+		options.Find().SetSort(
+			bson.D{{Key: "updated_at", Value: -1}},
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find deliveries: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(ctx); closeErr != nil {
+			log.Printf("close deliveries cursor: %v", closeErr)
+		}
+	}()
+
+	result := make([]deliveryState, 0)
+	for rows.Next(ctx) {
+		var d deliveryState
+		if err := rows.Decode(&d); err != nil {
+			return nil, fmt.Errorf("decode delivery: %w", err)
+		}
+		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deliveries: %w", err)
 	}
 
 	return result, nil

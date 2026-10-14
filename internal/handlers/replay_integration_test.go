@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"context"
@@ -13,6 +13,20 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
+
+// noopFanout satisfies FanoutService without touching the database.
+// It lets replay integration tests exercise the replay path while
+// keeping the fan-out itself inert.
+type noopFanout struct{}
+
+func (noopFanout) CreateDeliveries(
+	_ context.Context,
+	_ bson.ObjectID,
+	_ string,
+	_ string,
+) error {
+	return nil
+}
 
 func insertReplayIntegrationEvent(
 	t *testing.T,
@@ -74,7 +88,7 @@ func TestReplayIntegrationSuccessPreservesEventIdentity(t *testing.T) {
 	insertReplayIntegrationEvent(t, collection, id, "failed")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
+	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
 
 	recorder := serveReplayIntegrationRequest(mux, id)
 	if recorder.Code != http.StatusAccepted {
@@ -134,7 +148,7 @@ func TestReplayIntegrationRejectsIneligibleStates(t *testing.T) {
 	collection := db.Collection("events")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
+	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
 
 	for _, status := range []string{"pending", "processing", "delivered"} {
 		t.Run(status, func(t *testing.T) {
@@ -162,7 +176,7 @@ func TestReplayIntegrationConcurrentRequestsHaveOneWinner(t *testing.T) {
 	insertReplayIntegrationEvent(t, collection, id, "failed")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
+	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
 
 	const requestCount = 2
 	statuses := make(chan int, requestCount)
