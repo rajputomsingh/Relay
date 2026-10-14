@@ -31,6 +31,7 @@ func main() {
 	if err := run(); err != nil {
 		slog.Error(
 			"relay stopped",
+			"error", err.Error(),
 			"error_type", fmt.Sprintf("%T", err),
 		)
 		os.Exit(1)
