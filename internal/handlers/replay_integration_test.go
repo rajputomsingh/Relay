@@ -74,7 +74,7 @@ func TestReplayIntegrationSuccessPreservesEventIdentity(t *testing.T) {
 	insertReplayIntegrationEvent(t, collection, id, "failed")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, true).Register(mux)
+	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
 
 	recorder := serveReplayIntegrationRequest(mux, id)
 	if recorder.Code != http.StatusAccepted {
@@ -134,7 +134,7 @@ func TestReplayIntegrationRejectsIneligibleStates(t *testing.T) {
 	collection := db.Collection("events")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, true).Register(mux)
+	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
 
 	for _, status := range []string{"pending", "processing", "delivered"} {
 		t.Run(status, func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestReplayIntegrationConcurrentRequestsHaveOneWinner(t *testing.T) {
 	insertReplayIntegrationEvent(t, collection, id, "failed")
 
 	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, true).Register(mux)
+	NewEventsHandler(collection, testAPIKey, nil).Register(mux)
 
 	const requestCount = 2
 	statuses := make(chan int, requestCount)
