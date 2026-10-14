@@ -265,3 +265,10 @@ Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 ---
 
 Relay is an open-source foundation for reliable webhook delivery and event processing.
+
+## Webhook Signing
+
+Relay can sign outbound webhook requests with HMAC-SHA256. Set:
+
+```dotenv
+RELAY_WEBHOOK_SIGNING_SECRET=<at-least-32-characters>
