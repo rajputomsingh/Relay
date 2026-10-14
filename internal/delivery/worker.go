@@ -81,13 +81,33 @@ func NewWorker(
 	}
 }
 
+// validateConfig validates settings required for safe worker operation.
+func (w *Worker) validateConfig() error {
+	switch {
+	case w.config.PollInterval <= 0:
+		return errors.New("poll interval must be positive")
+	case w.config.RequestTimeout <= 0:
+		return errors.New("request timeout must be positive")
+	case w.config.LeaseDuration <= w.config.RequestTimeout:
+		return errors.New(
+			"lease duration must be greater than request timeout",
+		)
+	case w.config.MaxAttempts <= 0:
+		return errors.New("max attempts must be positive")
+	case w.config.WebhookURL == "":
+		return errors.New("webhook URL must not be empty")
+	}
+
+	return nil
+}
+
 // Run polls MongoDB until the context is cancelled.
 // Start the worker only when a webhook destination is configured.
 func (w *Worker) Run(ctx context.Context) {
-	if w.config.PollInterval <= 0 {
+	if err := w.validateConfig(); err != nil {
 		w.logger.Error(
 			"delivery worker configuration invalid",
-			"reason", "poll interval must be positive",
+			"reason", err.Error(),
 		)
 		return
 	}

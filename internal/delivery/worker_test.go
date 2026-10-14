@@ -62,3 +62,112 @@ func TestWorkerDoesNotFollowRedirects(t *testing.T) {
 		t.Fatalf("CheckRedirect() = %v; want %v", err, http.ErrUseLastResponse)
 	}
 }
+
+func TestValidateConfig(t *testing.T) {
+	valid := Config{
+		WebhookURL:     "https://example.com/webhook",
+		PollInterval:   2 * time.Second,
+		MaxAttempts:    8,
+		RequestTimeout: 10 * time.Second,
+		LeaseDuration:  30 * time.Second,
+	}
+
+	tests := []struct {
+		name    string
+		modify  func(*Config)
+		wantErr bool
+	}{
+		{
+			name:   "valid configuration",
+			modify: func(*Config) {},
+		},
+		{
+			name: "zero poll interval",
+			modify: func(c *Config) {
+				c.PollInterval = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative poll interval",
+			modify: func(c *Config) {
+				c.PollInterval = -time.Second
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero request timeout",
+			modify: func(c *Config) {
+				c.RequestTimeout = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative request timeout",
+			modify: func(c *Config) {
+				c.RequestTimeout = -time.Second
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero lease duration",
+			modify: func(c *Config) {
+				c.LeaseDuration = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "lease shorter than request timeout",
+			modify: func(c *Config) {
+				c.LeaseDuration = 9 * time.Second
+			},
+			wantErr: true,
+		},
+		{
+			name: "lease equals request timeout",
+			modify: func(c *Config) {
+				c.LeaseDuration = c.RequestTimeout
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero max attempts",
+			modify: func(c *Config) {
+				c.MaxAttempts = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative max attempts",
+			modify: func(c *Config) {
+				c.MaxAttempts = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing webhook URL",
+			modify: func(c *Config) {
+				c.WebhookURL = ""
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := valid
+			tt.modify(&cfg)
+
+			worker := NewWorker(nil, nil, cfg)
+			err := worker.validateConfig()
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf(
+					"validateConfig() error = %v, wantErr %v",
+					err,
+					tt.wantErr,
+				)
+			}
+		})
+	}
+}
