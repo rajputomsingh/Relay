@@ -102,14 +102,11 @@ func newMongoInspectionIntegration(t *testing.T) (*mongo.Database, *InspectionHa
 	})
 
 	handler := NewInspectionHandler(
-
 		db.Collection("events"),
-
 		db.Collection("delivery_attempts"),
-
+		db.Collection("deliveries"),
 		testAPIKey,
 	)
-
 	return db, handler
 
 }
@@ -582,6 +579,7 @@ func TestInspectionIntegrationAttemptsDoNotLeakInternalErrors(t *testing.T) {
 	failureHandler := NewInspectionHandler(
 		db.Collection("events"),
 		failureDB.Collection("delivery_attempts"),
+		failureDB.Collection("deliveries"),
 		testAPIKey,
 	)
 
@@ -605,5 +603,85 @@ func TestInspectionIntegrationAttemptsDoNotLeakInternalErrors(t *testing.T) {
 		if strings.Contains(body, internalDetail) {
 			t.Fatalf("response leaked internal error details: %s", recorder.Body.String())
 		}
+	}
+}
+func TestInspectionIntegrationEventDeliveries(t *testing.T) {
+	db, handler := newMongoInspectionIntegration(t)
+
+	eventID := bson.NewObjectID()
+	insertIntegrationEvent(t, db, eventID)
+
+	endpointA := bson.NewObjectID()
+	endpointB := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	docs := []any{
+		bson.M{
+			"_id":          bson.NewObjectID(),
+			"event_id":     eventID,
+			"endpoint_id":  endpointA,
+			"status":       "delivered",
+			"attempts":     1,
+			"max_attempts": 3,
+			"delivered_at": now,
+			"created_at":   now,
+			"updated_at":   now,
+		},
+		bson.M{
+			"_id":          bson.NewObjectID(),
+			"event_id":     eventID,
+			"endpoint_id":  endpointB,
+			"status":       "pending",
+			"attempts":     2,
+			"max_attempts": 3,
+			"last_error":   "connection refused",
+			"created_at":   now,
+			"updated_at":   now,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := db.Collection("deliveries").InsertMany(ctx, docs); err != nil {
+		t.Fatalf("insert deliveries: %v", err)
+	}
+
+	recorder := serveInspectionIntegrationRequest(
+		t,
+		handler,
+		"/v1/events/"+eventID.Hex()+"/deliveries",
+		testAPIKey,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp eventDeliveriesResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Deliveries) != 2 {
+		t.Fatalf("expected 2 deliveries, got %d", len(resp.Deliveries))
+	}
+	if resp.EventID != eventID.Hex() {
+		t.Errorf("event_id = %q, want %q", resp.EventID, eventID.Hex())
+	}
+
+	statuses := map[string]string{}
+	for _, d := range resp.Deliveries {
+		statuses[d.EndpointID] = d.Status
+	}
+	if statuses[endpointA.Hex()] != "delivered" {
+		t.Errorf(
+			"endpointA status = %q, want delivered",
+			statuses[endpointA.Hex()],
+		)
+	}
+	if statuses[endpointB.Hex()] != "pending" {
+		t.Errorf(
+			"endpointB status = %q, want pending",
+			statuses[endpointB.Hex()],
+		)
 	}
 }

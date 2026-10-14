@@ -38,13 +38,6 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.deliveryEnabled {
-		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error": "webhook delivery is disabled",
-		})
-		return
-	}
-
 	const suffix = "/replay"
 	path := strings.TrimPrefix(r.URL.Path, "/v1/events/")
 	if !strings.HasSuffix(path, suffix) {
@@ -62,6 +55,13 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeEventJSON(w, http.StatusBadRequest, map[string]any{
 			"error": "invalid event ID",
+		})
+		return
+	}
+
+	if h.fanout == nil {
+		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": "webhook delivery is disabled",
 		})
 		return
 	}

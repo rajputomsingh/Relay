@@ -16,10 +16,20 @@ import (
 
 const maxEventBody = 1 << 20
 
+// FanoutService creates per-endpoint deliveries for accepted events.
+type FanoutService interface {
+	CreateDeliveries(
+		ctx context.Context,
+		eventID bson.ObjectID,
+		source string,
+		eventType string,
+	) error
+}
+
 type EventsHandler struct {
-	collection      *mongo.Collection
-	apiKey          string
-	deliveryEnabled bool
+	collection *mongo.Collection
+	apiKey     string
+	fanout     FanoutService
 }
 
 type createEventRequest struct {
@@ -28,19 +38,15 @@ type createEventRequest struct {
 	Data      map[string]any `json:"data"`
 }
 
-// The variadic argument preserves compatibility with existing tests
-// and callers that use NewEventsHandler(collection, apiKey).
 func NewEventsHandler(
 	collection *mongo.Collection,
 	apiKey string,
-	deliveryEnabled ...bool,
+	fanout FanoutService,
 ) *EventsHandler {
-	enabled := len(deliveryEnabled) > 0 && deliveryEnabled[0]
-
 	return &EventsHandler{
-		collection:      collection,
-		apiKey:          apiKey,
-		deliveryEnabled: enabled,
+		collection: collection,
+		apiKey:     apiKey,
+		fanout:     fanout,
 	}
 }
 
@@ -140,8 +146,8 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	deliveryStatus := "disabled"
-	if h.deliveryEnabled {
-		deliveryStatus = "pending"
+	if h.fanout != nil {
+		deliveryStatus = "managed"
 	}
 
 	now := time.Now().UTC()
@@ -171,6 +177,29 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 			"error": "failed to persist event",
 		})
 		return
+	}
+
+	eventID, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		writeEventJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to persist event",
+		})
+		return
+	}
+
+	if h.fanout != nil {
+		if err := h.fanout.CreateDeliveries(
+			ctx,
+			eventID,
+			req.Source,
+			req.EventType,
+		); err != nil {
+			writeEventJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":    "event accepted but fan-out failed",
+				"event_id": eventID.Hex(),
+			})
+			return
+		}
 	}
 
 	writeEventJSON(w, http.StatusAccepted, map[string]any{

@@ -14,6 +14,7 @@ import (
 	"github.com/rajputomsingh/relay/internal/config"
 	"github.com/rajputomsingh/relay/internal/database"
 	"github.com/rajputomsingh/relay/internal/delivery"
+	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -75,6 +76,8 @@ func run() error {
 
 	eventsCollection := db.Collection("events")
 	attemptsCollection := db.Collection("delivery_attempts")
+	endpointsCollection := db.Collection("endpoints")
+	deliveriesCollection := db.Collection("deliveries")
 
 	// Create the unique idempotency index.
 	indexCtx, cancelIndex := context.WithTimeout(
@@ -214,16 +217,52 @@ func run() error {
 		return errors.New("failed to initialize attempt pagination index")
 	}
 
+	// Create indexes for the endpoints and deliveries collections.
+	multiIndexCtx, cancelMultiIndex := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+
+	err = database.EnsureMultiEndpointIndexes(multiIndexCtx, db)
+	cancelMultiIndex()
+
+	if err != nil {
+		return fmt.Errorf("failed to initialize multi-endpoint indexes: %w", err)
+	}
+
+	// Bootstrap a default endpoint when a legacy webhook URL is
+	// configured and no endpoints exist yet.
+	endpointStore := endpoints.NewStore(endpointsCollection)
+
+	if err := endpoints.EnsureDefaultEndpoint(
+		context.Background(),
+		endpointStore,
+		endpoints.BootstrapConfig{
+			URL:           cfg.WebhookURL,
+			SigningSecret: cfg.WebhookSigningSecret,
+			MaxAttempts:   cfg.MaxDeliveryAttempts,
+		},
+	); err != nil {
+		return fmt.Errorf("endpoint bootstrap failed: %w", err)
+	}
+
 	// Register HTTP handlers.
 	mux := http.NewServeMux()
 
 	healthHandler := handlers.NewHealthHandler(client)
 	healthHandler.Register(mux)
 
+	fanout := delivery.NewFanout(
+		eventsCollection,
+		endpointsCollection,
+		deliveriesCollection,
+		nil,
+	)
+
 	eventsHandler := handlers.NewEventsHandler(
 		eventsCollection,
 		cfg.RelayAPIKey,
-		cfg.WebhookURL != "",
+		fanout,
 	)
 	eventsHandler.Register(mux)
 
@@ -236,6 +275,7 @@ func run() error {
 	inspectionHandler := handlers.NewInspectionHandler(
 		eventsCollection,
 		attemptsCollection,
+		deliveriesCollection,
 		cfg.RelayAPIKey,
 	)
 
@@ -246,6 +286,12 @@ func run() error {
 	)
 	metricsHandler.Register(mux)
 	inspectionHandler.Register(mux)
+
+	endpointsHandler := handlers.NewEndpointsHandler(
+		endpointStore,
+		cfg.RelayAPIKey,
+	)
+	endpointsHandler.Register(mux)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -268,14 +314,14 @@ func run() error {
 	if cfg.WebhookURL != "" {
 		worker := delivery.NewWorker(
 			eventsCollection,
+			endpointsCollection,
+			deliveriesCollection,
 			attemptsCollection,
 			delivery.Config{
-				WebhookURL:           cfg.WebhookURL,
-				PollInterval:         time.Duration(cfg.WorkerPollSeconds) * time.Second,
-				MaxAttempts:          cfg.MaxDeliveryAttempts,
-				RequestTimeout:       10 * time.Second,
-				LeaseDuration:        30 * time.Second,
-				WebhookSigningSecret: cfg.WebhookSigningSecret,
+				PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
+				RequestTimeout: 10 * time.Second,
+				LeaseDuration:  30 * time.Second,
+				Logger:         slog.Default(),
 			},
 		)
 
@@ -284,7 +330,7 @@ func run() error {
 			worker.Run(stopCtx)
 		}()
 
-		slog.Info("webhook delivery enabled")
+		slog.Info("multi-endpoint delivery worker started")
 	} else {
 		close(workerDone)
 		slog.Info(
@@ -313,7 +359,6 @@ func run() error {
 			return nil
 		}
 
-		// Do not log the raw server error; keep details out of logs.
 		return fmt.Errorf("HTTP server failed: %w", err)
 
 	case <-stopCtx.Done():

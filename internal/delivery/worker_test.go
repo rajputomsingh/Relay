@@ -7,8 +7,8 @@ import (
 )
 
 func TestRetryDelay(t *testing.T) {
-	worker := NewWorker(nil, nil, Config{
-		MaxAttempts:    8,
+	worker := NewWorker(nil, nil, nil, nil, Config{
+		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
 	})
@@ -43,9 +43,10 @@ func TestRetryDelay(t *testing.T) {
 }
 
 func TestWorkerDoesNotFollowRedirects(t *testing.T) {
-	worker := NewWorker(nil, nil, Config{
-		WebhookURL:     "https://example.com/webhook",
+	worker := NewWorker(nil, nil, nil, nil, Config{
+		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
+		LeaseDuration:  30 * time.Second,
 	})
 
 	req, err := http.NewRequest(
@@ -65,9 +66,7 @@ func TestWorkerDoesNotFollowRedirects(t *testing.T) {
 
 func TestValidateConfig(t *testing.T) {
 	valid := Config{
-		WebhookURL:     "https://example.com/webhook",
 		PollInterval:   2 * time.Second,
-		MaxAttempts:    8,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
 	}
@@ -130,27 +129,6 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
-		{
-			name: "zero max attempts",
-			modify: func(c *Config) {
-				c.MaxAttempts = 0
-			},
-			wantErr: true,
-		},
-		{
-			name: "negative max attempts",
-			modify: func(c *Config) {
-				c.MaxAttempts = -1
-			},
-			wantErr: true,
-		},
-		{
-			name: "missing webhook URL",
-			modify: func(c *Config) {
-				c.WebhookURL = ""
-			},
-			wantErr: true,
-		},
 	}
 
 	for _, tt := range tests {
@@ -158,7 +136,7 @@ func TestValidateConfig(t *testing.T) {
 			cfg := valid
 			tt.modify(&cfg)
 
-			worker := NewWorker(nil, nil, cfg)
+			worker := NewWorker(nil, nil, nil, nil, cfg)
 			err := worker.validateConfig()
 
 			if (err != nil) != tt.wantErr {
@@ -169,38 +147,5 @@ func TestValidateConfig(t *testing.T) {
 				)
 			}
 		})
-	}
-}
-
-func TestWorkerSignerRejectsShortSecret(t *testing.T) {
-	worker := NewWorker(nil, nil, Config{
-		WebhookURL:           "https://example.com/hook",
-		PollInterval:         2 * time.Second,
-		MaxAttempts:          3,
-		RequestTimeout:       10 * time.Second,
-		LeaseDuration:        30 * time.Second,
-		WebhookSigningSecret: "short",
-	})
-
-	if err := worker.validateConfig(); err == nil {
-		t.Fatal("expected validation error for short signing secret")
-	}
-}
-
-func TestWorkerSignerConfigured(t *testing.T) {
-	worker := NewWorker(nil, nil, Config{
-		WebhookURL:           "https://example.com/hook",
-		PollInterval:         2 * time.Second,
-		MaxAttempts:          3,
-		RequestTimeout:       10 * time.Second,
-		LeaseDuration:        30 * time.Second,
-		WebhookSigningSecret: "0123456789abcdef0123456789abcdef",
-	})
-
-	if err := worker.validateConfig(); err != nil {
-		t.Fatalf("unexpected validation error: %v", err)
-	}
-	if worker.signer == nil {
-		t.Fatal("expected signer to be configured")
 	}
 }

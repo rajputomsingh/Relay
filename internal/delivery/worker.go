@@ -13,31 +13,43 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/security"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// Config controls the multi-endpoint delivery worker.
+//
+// Per-endpoint settings (URL, signing secret, retry limit, event filter)
+// live on the endpoint document and are read at claim time.
 type Config struct {
-	WebhookURL           string
-	PollInterval         time.Duration
-	MaxAttempts          int
-	RequestTimeout       time.Duration
-	LeaseDuration        time.Duration
-	Logger               *slog.Logger
-	WebhookSigningSecret string
+	PollInterval   time.Duration
+	RequestTimeout time.Duration
+	LeaseDuration  time.Duration
+	Logger         *slog.Logger
 }
 
+// Worker processes deliveries for every enabled endpoint.
 type Worker struct {
-	events   *mongo.Collection
-	attempts *mongo.Collection
-	config   Config
-	logger   *slog.Logger
-	client   *http.Client
-	signer   *security.Signer
+	events     *mongo.Collection
+	endpoints  *mongo.Collection
+	deliveries *mongo.Collection
+	attempts   *mongo.Collection
+	config     Config
+	logger     *slog.Logger
+	client     *http.Client
 }
 
+// claimResult carries the delivery plus its loaded event and endpoint.
+type claimResult struct {
+	Delivery Delivery
+	Event    eventRecord
+	Endpoint endpoints.Endpoint
+}
+
+// eventRecord is the projection of the events document used for delivery.
 type eventRecord struct {
 	ID             bson.ObjectID  `bson:"_id"`
 	Source         string         `bson:"source"`
@@ -45,10 +57,9 @@ type eventRecord struct {
 	Data           map[string]any `bson:"data"`
 	IdempotencyKey string         `bson:"idempotency_key"`
 	ReceivedAt     time.Time      `bson:"received_at"`
-	Attempts       int            `bson:"delivery_attempts"`
-	LeaseToken     string         `bson:"lease_token"`
 }
 
+// webhookPayload is the JSON body sent to every receiver.
 type webhookPayload struct {
 	EventID        string         `json:"event_id"`
 	Source         string         `json:"source"`
@@ -58,8 +69,11 @@ type webhookPayload struct {
 	ReceivedAt     time.Time      `json:"received_at"`
 }
 
+// NewWorker constructs the multi-endpoint delivery worker.
 func NewWorker(
 	events *mongo.Collection,
+	endpointsCollection *mongo.Collection,
+	deliveries *mongo.Collection,
 	attempts *mongo.Collection,
 	cfg Config,
 ) *Worker {
@@ -68,32 +82,13 @@ func NewWorker(
 		logger = slog.Default()
 	}
 
-	var signer *security.Signer
-	if cfg.WebhookSigningSecret != "" {
-		if len(cfg.WebhookSigningSecret) < 32 {
-			logger.Error(
-				"invalid webhook signing configuration",
-				"reason", "secret must contain at least 32 characters",
-			)
-		} else {
-			s, err := security.NewSigner(cfg.WebhookSigningSecret)
-			if err != nil {
-				logger.Error(
-					"invalid webhook signing configuration",
-					"reason", err.Error(),
-				)
-			} else {
-				signer = s
-			}
-		}
-	}
-
 	return &Worker{
-		events:   events,
-		attempts: attempts,
-		config:   cfg,
-		logger:   logger,
-		signer:   signer,
+		events:     events,
+		endpoints:  endpointsCollection,
+		deliveries: deliveries,
+		attempts:   attempts,
+		config:     cfg,
+		logger:     logger,
 		client: &http.Client{
 			Timeout: cfg.RequestTimeout,
 			CheckRedirect: func(
@@ -106,7 +101,7 @@ func NewWorker(
 	}
 }
 
-// validateConfig validates settings required for safe worker operation.
+// validateConfig validates worker settings.
 func (w *Worker) validateConfig() error {
 	switch {
 	case w.config.PollInterval <= 0:
@@ -117,26 +112,12 @@ func (w *Worker) validateConfig() error {
 		return errors.New(
 			"lease duration must be greater than request timeout",
 		)
-	case w.config.MaxAttempts <= 0:
-		return errors.New("max attempts must be positive")
-	case w.config.WebhookURL == "":
-		return errors.New("webhook URL must not be empty")
-	case w.config.WebhookSigningSecret != "" &&
-		len(w.config.WebhookSigningSecret) < 32:
-		return errors.New(
-			"webhook signing secret must contain at least 32 characters",
-		)
-	case w.config.WebhookSigningSecret != "" && w.signer == nil:
-		return errors.New(
-			"webhook signing is enabled but signer is not configured",
-		)
 	}
 
 	return nil
 }
 
-// Run polls MongoDB until the context is cancelled.
-// Start the worker only when a webhook destination is configured.
+// Run polls for due deliveries until the context is cancelled.
 func (w *Worker) Run(ctx context.Context) {
 	if err := w.validateConfig(); err != nil {
 		w.logger.Error(
@@ -175,73 +156,135 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
-// claim atomically assigns one due event to this worker.
-// Every claim receives a fresh token, including expired-lease recovery.
-// The token fences off state updates from stale workers.
-func (w *Worker) claim(ctx context.Context) (eventRecord, error) {
+// claim atomically assigns one due delivery to this worker.
+// It then loads the associated event and endpoint.
+func (w *Worker) claim(ctx context.Context) (claimResult, error) {
+	if err := w.failExhaustedLeases(ctx); err != nil {
+		return claimResult{}, err
+	}
+
 	now := time.Now().UTC()
 	leaseToken := bson.NewObjectID().Hex()
 
 	filter := bson.M{
 		"$or": []bson.M{
 			{
-				"delivery_status": "pending",
+				"status": StatusPending,
 				"$or": []bson.M{
 					{"next_attempt_at": bson.M{"$exists": false}},
 					{"next_attempt_at": bson.M{"$lte": now}},
 				},
 			},
 			{
-				"delivery_status":   "processing",
-				"lease_until":       bson.M{"$lte": now},
-				"delivery_attempts": bson.M{"$lt": w.config.MaxAttempts},
+				"status":      StatusProcessing,
+				"lease_until": bson.M{"$lte": now},
 			},
 		},
 	}
 
 	update := bson.M{
 		"$set": bson.M{
-			"delivery_status": "processing",
-			"lease_until":     now.Add(w.config.LeaseDuration),
-			"last_attempt_at": now,
-			"lease_token":     leaseToken,
-		},
-		"$inc": bson.M{
-			"delivery_attempts": 1,
+			"status":      StatusProcessing,
+			"lease_until": now.Add(w.config.LeaseDuration),
+			"lease_token": leaseToken,
+			"updated_at":  now,
 		},
 	}
 
-	var event eventRecord
-
-	err := w.events.FindOneAndUpdate(
+	var delivery Delivery
+	err := w.deliveries.FindOneAndUpdate(
 		ctx,
 		filter,
 		update,
 		options.FindOneAndUpdate().
-			SetSort(bson.D{{Key: "received_at", Value: 1}}).
+			SetSort(bson.D{
+				{Key: "next_attempt_at", Value: 1},
+				{Key: "created_at", Value: 1},
+			}).
 			SetReturnDocument(options.After),
-	).Decode(&event)
+	).Decode(&delivery)
+	if err != nil {
+		return claimResult{}, err
+	}
 
-	return event, err
+	var event eventRecord
+	err = w.events.FindOne(ctx, bson.M{"_id": delivery.EventID}).Decode(&event)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		if terr := w.recordTerminalFailure(
+			ctx, delivery, "event not found",
+		); terr != nil {
+			w.logger.Error(
+				"failed to mark delivery as failed for missing event",
+				"delivery_id", delivery.ID.Hex(),
+				"error_type", fmt.Sprintf("%T", terr),
+			)
+		}
+		return claimResult{}, mongo.ErrNoDocuments
+	}
+	if err != nil {
+		return claimResult{}, fmt.Errorf("load event: %w", err)
+	}
+
+	var ep endpoints.Endpoint
+	err = w.endpoints.FindOne(
+		ctx, bson.M{"_id": delivery.EndpointID},
+	).Decode(&ep)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		if terr := w.recordTerminalFailure(
+			ctx, delivery, "endpoint not found",
+		); terr != nil {
+			w.logger.Error(
+				"failed to mark delivery as failed for missing endpoint",
+				"delivery_id", delivery.ID.Hex(),
+				"error_type", fmt.Sprintf("%T", terr),
+			)
+		}
+		return claimResult{}, mongo.ErrNoDocuments
+	}
+	if err != nil {
+		return claimResult{}, fmt.Errorf("load endpoint: %w", err)
+	}
+
+	if !ep.Enabled {
+		if terr := w.recordTerminalFailure(
+			ctx, delivery, "endpoint disabled",
+		); terr != nil {
+			w.logger.Error(
+				"failed to mark delivery as failed for disabled endpoint",
+				"delivery_id", delivery.ID.Hex(),
+				"error_type", fmt.Sprintf("%T", terr),
+			)
+		}
+		return claimResult{}, mongo.ErrNoDocuments
+	}
+
+	return claimResult{
+		Delivery: delivery,
+		Event:    event,
+		Endpoint: ep,
+	}, nil
 }
 
-// failExhaustedLeases permanently fails expired jobs that have
-// already used all configured delivery attempts.
+// failExhaustedLeases permanently fails expired processing deliveries
+// whose attempts have already reached the endpoint's retry limit.
 func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 	now := time.Now().UTC()
 
-	result, err := w.events.UpdateMany(
+	result, err := w.deliveries.UpdateMany(
 		ctx,
 		bson.M{
-			"delivery_status":   "processing",
-			"lease_until":       bson.M{"$lte": now},
-			"delivery_attempts": bson.M{"$gte": w.config.MaxAttempts},
+			"status":      StatusProcessing,
+			"lease_until": bson.M{"$lte": now},
+			"$expr": bson.M{
+				"$gte": bson.A{"$attempts", "$max_attempts"},
+			},
 		},
 		bson.M{
 			"$set": bson.M{
-				"delivery_status":     "failed",
-				"failed_at":           now,
-				"last_delivery_error": "Delivery lease expired after maximum attempts",
+				"status":     StatusFailed,
+				"failed_at":  now,
+				"updated_at": now,
+				"last_error": "Delivery lease expired after maximum attempts",
 			},
 			"$unset": bson.M{
 				"lease_until":     "",
@@ -264,97 +307,74 @@ func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 	return nil
 }
 
-func (w *Worker) processOne(ctx context.Context) (resultErr error) {
-	if err := w.failExhaustedLeases(ctx); err != nil {
-		return err
-	}
-
-	event, err := w.claim(ctx)
+// processOne claims and executes one delivery.
+func (w *Worker) processOne(ctx context.Context) error {
+	claim, err := w.claim(ctx)
 	if err != nil {
 		return err
 	}
 
+	delivery := claim.Delivery
+	event := claim.Event
+	endpoint := claim.Endpoint
+
 	startedAt := time.Now().UTC()
 	httpStatus := 0
-	outcome := "failed"
 	var attemptErr error
+	outcome := "failed"
 
-	// Persist attempt history independently of the delivery state.
-	// Always emit the completion log, even when history is unavailable.
 	defer func() {
 		finishedAt := time.Now().UTC()
 		durationMS := finishedAt.Sub(startedAt).Milliseconds()
 
 		attempt := Attempt{
 			EventID:       event.ID,
-			AttemptNumber: event.Attempts,
+			EndpointID:    endpoint.ID,
+			AttemptNumber: delivery.Attempts + 1,
 			StartedAt:     startedAt,
 			FinishedAt:    finishedAt,
 			DurationMS:    durationMS,
 			HTTPStatus:    httpStatus,
 			Outcome:       outcome,
 		}
-
 		if attemptErr != nil {
 			attempt.Error = attemptErr.Error()
 		}
 
-		if w.attempts == nil {
-			w.logger.Warn(
-				"delivery attempt history unavailable",
+		saveCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		_, saveErr := w.attempts.InsertOne(saveCtx, attempt)
+		cancel()
+
+		if saveErr != nil {
+			w.logger.Error(
+				"delivery attempt history write failed",
 				"event_id", event.ID.Hex(),
-				"attempt", event.Attempts,
+				"endpoint_id", endpoint.ID.Hex(),
+				"error_type", fmt.Sprintf("%T", saveErr),
 			)
-		} else {
-			saveCtx, cancel := context.WithTimeout(
-				context.Background(),
-				5*time.Second,
-			)
-
-			_, saveErr := w.attempts.InsertOne(saveCtx, attempt)
-			cancel()
-
-			if saveErr != nil {
-				w.logger.Error(
-					"delivery attempt history write failed",
-					"event_id", event.ID.Hex(),
-					"attempt", event.Attempts,
-					"error_type", fmt.Sprintf("%T", saveErr),
-				)
-			}
-		}
-
-		// Keep the persisted history outcome compatible with existing tests.
-		// Use a separate value for structured operational logging.
-		logOutcome := outcome
-		if outcome == "failed" &&
-			event.Attempts < w.config.MaxAttempts {
-			logOutcome = "retry_scheduled"
 		}
 
 		attrs := []any{
 			"event_id", event.ID.Hex(),
-			"attempt", event.Attempts,
-			"outcome", logOutcome,
+			"endpoint_id", endpoint.ID.Hex(),
+			"attempt", attempt.AttemptNumber,
+			"outcome", outcome,
 			"duration_ms", durationMS,
 			"http_status", httpStatus,
 		}
-
 		if attemptErr != nil {
 			attrs = append(
-				attrs,
-				"error_type",
-				fmt.Sprintf("%T", attemptErr),
+				attrs, "error_type", fmt.Sprintf("%T", attemptErr),
 			)
 		}
 
-		switch logOutcome {
+		switch outcome {
 		case "delivered":
 			w.logger.Info("webhook delivery attempt completed", attrs...)
-		case "retry_scheduled":
-			w.logger.Warn("webhook delivery attempt completed", attrs...)
 		default:
-			w.logger.Error("webhook delivery attempt completed", attrs...)
+			w.logger.Warn("webhook delivery attempt completed", attrs...)
 		}
 	}()
 
@@ -370,24 +390,23 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		attemptErr = err
-		return w.recordFailure(ctx, event, err)
+		return w.recordFailure(ctx, delivery, err.Error())
 	}
 
 	requestCtx, cancel := context.WithTimeout(
-		ctx,
-		w.config.RequestTimeout,
+		ctx, w.config.RequestTimeout,
 	)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(
 		requestCtx,
 		http.MethodPost,
-		w.config.WebhookURL,
+		endpoint.URL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		attemptErr = err
-		return w.recordFailure(ctx, event, err)
+		return w.recordFailure(ctx, delivery, err.Error())
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -395,103 +414,121 @@ func (w *Worker) processOne(ctx context.Context) (resultErr error) {
 	req.Header.Set("Idempotency-Key", event.IdempotencyKey)
 	req.Header.Set("X-Relay-Event-ID", event.ID.Hex())
 
-	if w.signer != nil {
+	if endpoint.SigningSecret != "" {
+		signer, err := security.NewSigner(endpoint.SigningSecret)
+		if err != nil {
+			attemptErr = err
+			return w.recordFailure(ctx, delivery, err.Error())
+		}
 		ts := security.TimestampNow()
-		signature := w.signer.SignBody(ts, body)
-		req.Header.Set(security.TimestampHeader, strconv.FormatInt(ts, 10))
+		signature := signer.SignBody(ts, body)
+		req.Header.Set(
+			security.TimestampHeader, strconv.FormatInt(ts, 10),
+		)
 		req.Header.Set(security.SignatureHeader, signature)
 	}
 
 	resp, err := w.client.Do(req)
 	if err != nil {
 		attemptErr = err
-		return w.recordFailure(ctx, event, err)
+		return w.recordFailure(ctx, delivery, err.Error())
 	}
 	defer resp.Body.Close()
 
 	httpStatus = resp.StatusCode
-
-	// Drain only a limited amount of the response body.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	if resp.StatusCode < http.StatusOK ||
 		resp.StatusCode >= http.StatusMultipleChoices {
-		attemptErr = fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
-		return w.recordFailure(ctx, event, attemptErr)
+		attemptErr = fmt.Errorf(
+			"webhook returned HTTP %d", resp.StatusCode,
+		)
+		return w.recordFailure(ctx, delivery, attemptErr.Error())
 	}
 
-	// The receiver acknowledged delivery. Preserve this outcome even if
-	// the subsequent event-document update fails.
 	outcome = "delivered"
+	return w.recordSuccess(ctx, delivery)
+}
 
-	result, err := w.events.UpdateOne(
+// recordSuccess marks the delivery delivered, fenced by lease token.
+func (w *Worker) recordSuccess(
+	ctx context.Context,
+	delivery Delivery,
+) error {
+	now := time.Now().UTC()
+
+	result, err := w.deliveries.UpdateOne(
 		ctx,
 		bson.M{
-			"_id":             event.ID,
-			"delivery_status": "processing",
-			"lease_token":     event.LeaseToken,
+			"_id":         delivery.ID,
+			"status":      StatusProcessing,
+			"lease_token": delivery.LeaseToken,
 		},
 		bson.M{
 			"$set": bson.M{
-				"delivery_status": "delivered",
-				"delivered_at":    time.Now().UTC(),
+				"status":       StatusDelivered,
+				"delivered_at": now,
+				"updated_at":   now,
 			},
 			"$unset": bson.M{
-				"lease_until":         "",
-				"lease_token":         "",
-				"next_attempt_at":     "",
-				"last_delivery_error": "",
+				"lease_until":     "",
+				"lease_token":     "",
+				"next_attempt_at": "",
+				"last_error":      "",
 			},
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("mark event delivered: %w", err)
+		return fmt.Errorf("mark delivery delivered: %w", err)
 	}
 	if result.MatchedCount == 0 {
 		return errors.New(
-			"mark event delivered: event is no longer owned by this lease",
+			"mark delivery delivered: no longer owned by this lease",
 		)
 	}
 
 	return nil
 }
 
-// recordFailure preserves the existing attempt-history outcome of "failed".
-// The completion logger derives "retry_scheduled" separately when applicable.
-// A stale worker cannot change state after its lease token has been replaced.
+// recordFailure schedules a retry or marks the delivery failed,
+// fenced by lease token. Used for transient failures (network,
+// non-2xx HTTP response, marshalling errors).
 func (w *Worker) recordFailure(
 	ctx context.Context,
-	event eventRecord,
-	cause error,
+	delivery Delivery,
+	message string,
 ) error {
 	now := time.Now().UTC()
 
-	set := bson.M{
-		"last_delivery_error": cause.Error(),
-	}
+	nextAttempt := delivery.Attempts + 1
 
+	set := bson.M{
+		"last_error": message,
+		"attempts":   nextAttempt,
+		"updated_at": now,
+	}
 	unset := bson.M{
 		"lease_until": "",
 		"lease_token": "",
 	}
 
-	if event.Attempts >= w.config.MaxAttempts {
-		set["delivery_status"] = "failed"
+	if nextAttempt >= delivery.MaxAttempts {
+		set["status"] = StatusFailed
 		set["failed_at"] = now
 		unset["next_attempt_at"] = ""
 	} else {
-		set["delivery_status"] = "pending"
+		set["status"] = StatusPending
 		set["next_attempt_at"] = now.Add(
-			w.retryDelay(event.Attempts),
+			w.retryDelay(nextAttempt),
 		)
 	}
 
-	result, err := w.events.UpdateOne(
+	result, err := w.deliveries.UpdateOne(
 		ctx,
 		bson.M{
-			"_id":             event.ID,
-			"delivery_status": "processing",
-			"lease_token":     event.LeaseToken,
+			"_id":         delivery.ID,
+			"status":      StatusProcessing,
+			"lease_token": delivery.LeaseToken,
 		},
 		bson.M{
 			"$set":   set,
@@ -499,12 +536,54 @@ func (w *Worker) recordFailure(
 		},
 	)
 	if err != nil {
-		// Avoid returning the original cause, which could contain a URL.
 		return fmt.Errorf("record delivery failure: %w", err)
 	}
 	if result.MatchedCount == 0 {
 		return errors.New(
-			"record delivery failure: event is no longer owned by this lease",
+			"record delivery failure: no longer owned by this lease",
+		)
+	}
+
+	return nil
+}
+
+// recordTerminalFailure marks a delivery failed without scheduling
+// a retry. Used when the delivery cannot succeed regardless of retries:
+// missing event, missing endpoint, disabled endpoint.
+func (w *Worker) recordTerminalFailure(
+	ctx context.Context,
+	delivery Delivery,
+	message string,
+) error {
+	now := time.Now().UTC()
+
+	result, err := w.deliveries.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":         delivery.ID,
+			"status":      StatusProcessing,
+			"lease_token": delivery.LeaseToken,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status":     StatusFailed,
+				"failed_at":  now,
+				"updated_at": now,
+				"last_error": message,
+			},
+			"$unset": bson.M{
+				"lease_until":     "",
+				"lease_token":     "",
+				"next_attempt_at": "",
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("record terminal delivery failure: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		return errors.New(
+			"record terminal delivery failure: no longer owned by this lease",
 		)
 	}
 

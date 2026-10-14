@@ -3,11 +3,13 @@
 </p>
 
 <h1 align="center">Relay</h1>
+
 <p align="center">
   Reliable webhook delivery for modern applications.
   <br />
   Built with Go and MongoDB to handle event ingestion, retries, delivery tracking, and replay.
 </p>
+
 <p align="center">
   <a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square" alt="GitHub stars" /></a>
   <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" /></a>
@@ -27,8 +29,8 @@ The system is designed to separate event ingestion from delivery execution while
 
 <p align="center">
   <img
-    src="https://github.com/user-attachments/assets/ca51cc58-2de8-45fe-9db4-5cf47496068e"
-    alt="Relay system architecture illustrating event ingestion, delivery workers, MongoDB persistence, webhook endpoints, and observability"
+    src="assets/architecture.png" 
+    alt="Relay system architecture showing event ingestion, delivery workers, MongoDB persistence, webhook endpoints, and observability"
     width="100%"
   />
 </p>
@@ -50,12 +52,11 @@ Relay validates and persists incoming events before processing downstream delive
 
 <p align="center">
   <img
-    src="https://github.com/user-attachments/assets/50e6e38c-85e2-4bde-96ef-d2574647ecb6"
-    alt="Webhook Event Delivery Flowchart"
+    src="assets/webhook-delivery-workflow.png"
+    alt="Relay webhook delivery workflow"
     width="100%"
   />
 </p>
-
 ## Technology Stack
 
 | Component | Technology |
@@ -202,6 +203,45 @@ Invoke-RestMethod `
 
 Set `RELAY_API_KEY` in the local environment before running the request.
 
+## Multi-Endpoint Delivery
+
+Relay delivers each accepted event to every enabled webhook endpoint whose event filter matches. Each endpoint maintains independent delivery state, retry policy, attempt history, and signing configuration.
+
+### Endpoint Management
+
+Manage webhook endpoints through the API:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/endpoints` | Register an endpoint |
+| `GET` | `/v1/endpoints` | List registered endpoints |
+| `GET` | `/v1/endpoints/{id}` | Retrieve endpoint details |
+| `PATCH` | `/v1/endpoints/{id}` | Update endpoint configuration |
+| `DELETE` | `/v1/endpoints/{id}` | Disable an endpoint (soft delete) |
+
+### Delivery Inspection
+
+Inspect delivery state and attempt history for an event:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/events/{id}/deliveries` | View per-endpoint delivery status |
+| `GET` | `/v1/events/{id}/attempts` | View delivery attempts, including endpoint identifiers |
+
+> Verify that these routes are registered and tested in the current codebase before treating them as available API functionality.
+
+### Per-Endpoint Configuration
+
+Each endpoint can define its destination URL, optional HMAC-SHA256 signing secret, event filters, enabled status, and maximum delivery attempts.
+
+Relay creates an independent delivery record for each matching endpoint. A failure at one endpoint should not prevent delivery to other matching endpoints.
+
+### Backward Compatibility
+
+`RELAY_WEBHOOK_URL` can be used to bootstrap a default endpoint on first startup when the endpoints collection is empty. After bootstrap, endpoints are managed through the API.
+
+For the data model, delivery lifecycle, retry behavior, signing protocol, and operational details, see the [Multi-Endpoint Delivery documentation](docs/multi-endpoint-delivery.md).
+
 ## Delivery Attempt History
 
 Relay stores delivery-attempt records in the MongoDB `delivery_attempts` collection.
@@ -209,6 +249,7 @@ Relay stores delivery-attempt records in the MongoDB `delivery_attempts` collect
 | Field | Purpose |
 |---|---|
 | `event_id` | Associated event |
+| `endpoint_id` | Associated webhook endpoint |
 | `attempt_number` | Attempt sequence number |
 | `started_at` | Attempt start time |
 | `finished_at` | Attempt completion time |
@@ -241,7 +282,6 @@ API-key authentication alone does not constitute a complete production security 
 - [ ] Expand automated integration and failure-path testing.
 - [ ] Add a delivery-attempt query API.
 - [ ] Introduce structured metrics and alerting.
-- [ ] Implement endpoint registration and management.
 - [ ] Add dead-letter handling for exhausted deliveries.
 - [ ] Introduce tenant isolation and per-tenant access controls.
 - [ ] Develop a dashboard for event inspection and replay.
@@ -268,7 +308,10 @@ Relay is an open-source foundation for reliable webhook delivery and event proce
 
 ## Webhook Signing
 
-Relay can sign outbound webhook requests with HMAC-SHA256. Set:
+Relay can sign outbound webhook requests with HMAC-SHA256. Configure a signing secret of at least 32 characters when required by your deployment:
 
 ```dotenv
-RELAY_WEBHOOK_SIGNING_SECRET=<at-least-32-characters>
+RELAY_WEBHOOK_SIGNING_SECRET=replace_with_a_secret_of_at_least_32_characters
+```
+
+Never commit real secrets to version control.
