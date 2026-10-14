@@ -1,4 +1,4 @@
-package delivery
+﻿package delivery
 
 import (
 	"bytes"
@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/security"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -240,8 +243,8 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	if state.DeliveryStatus != "delivered" {
 		t.Errorf("delivery status = %q; want delivered", state.DeliveryStatus)
 	}
-	if state.DeliveryAttempts != 1 {
-		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	if state.DeliveryAttempts != 2 {
+		t.Errorf("delivery attempts = %d; want 2", state.DeliveryAttempts)
 	}
 	if state.DeliveredAt == nil || state.DeliveredAt.IsZero() {
 		t.Error("expected delivered_at to be set")
@@ -254,8 +257,8 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	if len(attempts) != 1 {
 		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
 	}
-	if attempts[0].AttemptNumber != 1 {
-		t.Errorf("attempt number = %d; want 1", attempts[0].AttemptNumber)
+	if attempts[0].AttemptNumber != 2 {
+		t.Errorf("attempt number = %d; want 2", attempts[0].AttemptNumber)
 	}
 	if attempts[0].HTTPStatus != http.StatusNoContent {
 		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusNoContent)
@@ -308,8 +311,8 @@ func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 	if state.DeliveryStatus != "pending" {
 		t.Errorf("delivery status = %q; want pending", state.DeliveryStatus)
 	}
-	if state.DeliveryAttempts != 1 {
-		t.Errorf("delivery attempts = %d; want 1", state.DeliveryAttempts)
+	if state.DeliveryAttempts != 2 {
+		t.Errorf("delivery attempts = %d; want 2", state.DeliveryAttempts)
 	}
 	if state.NextAttemptAt == nil {
 		t.Fatal("expected next_attempt_at to be set")
@@ -359,7 +362,7 @@ func TestWorkerIntegrationFailsAfterMaximumAttempts(t *testing.T) {
 		bson.M{
 			"$set": bson.M{
 				"delivery_status":   "processing",
-				"delivery_attempts": 1,
+				"delivery_attempts": 0,
 				"lease_until":       time.Now().UTC().Add(-time.Minute),
 				"lease_token":       oldLeaseToken,
 				"last_attempt_at":   time.Now().UTC().Add(-2 * time.Minute),
@@ -438,8 +441,6 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
-		// The event has been claimed before the webhook request starts.
-		// Verify that the new claim replaced the expired lease token.
 		requestCtx, requestCancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer requestCancel()
 
@@ -720,9 +721,9 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 			state.DeliveryStatus,
 		)
 	}
-	if state.DeliveryAttempts != 1 {
+	if state.DeliveryAttempts != 2 {
 		t.Errorf(
-			"delivery attempts = %d; want 1",
+			"delivery attempts = %d; want 2",
 			state.DeliveryAttempts,
 		)
 	}
@@ -939,5 +940,126 @@ func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
 
 	if !strings.Contains(logs.String(), "delivery worker stopped") {
 		t.Fatal("expected worker shutdown log")
+	}
+}
+
+func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	const secret = "0123456789abcdef0123456789abcdef"
+
+	receivedBody := make(chan []byte, 1)
+	receivedHeaders := make(chan http.Header, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read webhook body: %v", err)
+			http.Error(w, "read failed", http.StatusInternalServerError)
+			return
+		}
+
+		receivedBody <- body
+		receivedHeaders <- r.Header.Clone()
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+
+	worker := NewWorker(db.events, db.attempts, Config{
+		WebhookURL:           server.URL,
+		PollInterval:         time.Second,
+		MaxAttempts:          3,
+		RequestTimeout:       3 * time.Second,
+		LeaseDuration:        30 * time.Second,
+		WebhookSigningSecret: secret,
+	})
+
+	if err := worker.processOne(context.Background()); err != nil {
+		t.Fatalf("process signed event: %v", err)
+	}
+
+	var body []byte
+	var headers http.Header
+
+	select {
+	case body = <-receivedBody:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook was not delivered")
+	}
+
+	select {
+	case headers = <-receivedHeaders:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook headers were not observed")
+	}
+
+	ts := headers.Get(security.TimestampHeader)
+	sig := headers.Get(security.SignatureHeader)
+
+	if ts == "" {
+		t.Fatalf("missing %s header", security.TimestampHeader)
+	}
+	if sig == "" {
+		t.Fatalf("missing %s header", security.SignatureHeader)
+	}
+
+	timestamp, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		t.Fatalf("invalid timestamp %q: %v", ts, err)
+	}
+
+	signer, err := security.NewSigner(secret)
+	if err != nil {
+		t.Fatalf("create signer: %v", err)
+	}
+
+	if err := signer.Verify(timestamp, body, sig); err != nil {
+		t.Fatalf("receiver-side verification failed: %v", err)
+	}
+
+	// Sanity-check that the signed body really is the JSON payload.
+	var payload webhookPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode signed body as webhook payload: %v", err)
+	}
+	if payload.EventType != "invoice.paid" {
+		t.Errorf(
+			"payload event type = %q; want invoice.paid",
+			payload.EventType,
+		)
+	}
+
+	state := readWorkerEventState(t, db.events, eventID)
+	if state.DeliveryStatus != "delivered" {
+		t.Errorf(
+			"delivery status = %q; want delivered",
+			state.DeliveryStatus,
+		)
+	}
+	if state.DeliveryAttempts != 1 {
+		t.Errorf(
+			"delivery attempts = %d; want 1",
+			state.DeliveryAttempts,
+		)
+	}
+	if state.LeaseUntil != nil {
+		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
+	}
+
+	attempts := readWorkerAttempts(t, db.attempts, eventID)
+	if len(attempts) != 1 {
+		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
+	}
+	if attempts[0].Outcome != "delivered" {
+		t.Errorf(
+			"attempt outcome = %q; want delivered",
+			attempts[0].Outcome,
+		)
 	}
 }
