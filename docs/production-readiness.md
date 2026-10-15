@@ -1,4 +1,4 @@
-# Production-Readiness Audit
+﻿# Production-Readiness Audit
 
 Status as of commit `<sha>` on `main`.
 

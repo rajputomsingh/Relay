@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img width="120" height="120" src="https://github.com/user-attachments/assets/099d8010-9f89-4536-b7b1-392d1667be3c" alt="Relay logo" />
 </p>
 
@@ -59,13 +59,13 @@ Relay validates and persists incoming events before processing downstream delive
 </p>
 ## Technology Stack
 
-| Component | Technology |
-|---|---|
-| Language | <img src="https://cdn.simpleicons.org/go/00ADD8" width="18" height="18" alt="Go" /> Go |
-| HTTP API | <img src="https://cdn.simpleicons.org/openapiinitiative/6BA539" width="18" height="18" alt="HTTP API" /> HTTP and JSON |
-| Persistence | <img src="https://cdn.simpleicons.org/mongodb/47A248" width="18" height="18" alt="MongoDB" /> MongoDB |
-| Database Driver | <img src="https://cdn.simpleicons.org/mongodb/47A248" width="18" height="18" alt="MongoDB" /> MongoDB Go Driver v2 |
-| Configuration | <img src="https://cdn.simpleicons.org/dotenv/ECD53F" width="18" height="18" alt="Environment variables" /> Environment variables |
+| Component       | Technology                                                                                                                       |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Language        | <img src="https://cdn.simpleicons.org/go/00ADD8" width="18" height="18" alt="Go" /> Go                                           |
+| HTTP API        | <img src="https://cdn.simpleicons.org/openapiinitiative/6BA539" width="18" height="18" alt="HTTP API" /> HTTP and JSON           |
+| Persistence     | <img src="https://cdn.simpleicons.org/mongodb/47A248" width="18" height="18" alt="MongoDB" /> MongoDB                            |
+| Database Driver | <img src="https://cdn.simpleicons.org/mongodb/47A248" width="18" height="18" alt="MongoDB" /> MongoDB Go Driver v2               |
+| Configuration   | <img src="https://cdn.simpleicons.org/dotenv/ECD53F" width="18" height="18" alt="Environment variables" /> Environment variables |
 
 ## Project Structure
 
@@ -145,11 +145,11 @@ go build ./...
 
 ## API
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/healthz` | Service liveness |
-| `GET` | `/readyz` | Database readiness |
-| `POST` | `/v1/events` | Submit an authenticated event |
+| Method | Endpoint                 | Description                     |
+| ------ | ------------------------ | ------------------------------- |
+| `GET`  | `/healthz`               | Service liveness                |
+| `GET`  | `/readyz`                | Database readiness              |
+| `POST` | `/v1/events`             | Submit an authenticated event   |
 | `POST` | `/v1/events/{id}/replay` | Replay an eligible failed event |
 
 ### Submit an event
@@ -211,22 +211,22 @@ Relay delivers each accepted event to every enabled webhook endpoint whose event
 
 Manage webhook endpoints through the API:
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/endpoints` | Register an endpoint |
-| `GET` | `/v1/endpoints` | List registered endpoints |
-| `GET` | `/v1/endpoints/{id}` | Retrieve endpoint details |
-| `PATCH` | `/v1/endpoints/{id}` | Update endpoint configuration |
+| Method   | Endpoint             | Description                       |
+| -------- | -------------------- | --------------------------------- |
+| `POST`   | `/v1/endpoints`      | Register an endpoint              |
+| `GET`    | `/v1/endpoints`      | List registered endpoints         |
+| `GET`    | `/v1/endpoints/{id}` | Retrieve endpoint details         |
+| `PATCH`  | `/v1/endpoints/{id}` | Update endpoint configuration     |
 | `DELETE` | `/v1/endpoints/{id}` | Disable an endpoint (soft delete) |
 
 ### Delivery Inspection
 
 Inspect delivery state and attempt history for an event:
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/v1/events/{id}/deliveries` | View per-endpoint delivery status |
-| `GET` | `/v1/events/{id}/attempts` | View delivery attempts, including endpoint identifiers |
+| Method | Endpoint                     | Description                                            |
+| ------ | ---------------------------- | ------------------------------------------------------ |
+| `GET`  | `/v1/events/{id}/deliveries` | View per-endpoint delivery status                      |
+| `GET`  | `/v1/events/{id}/attempts`   | View delivery attempts, including endpoint identifiers |
 
 > Verify that these routes are registered and tested in the current codebase before treating them as available API functionality.
 
@@ -246,17 +246,17 @@ For the data model, delivery lifecycle, retry behavior, signing protocol, and op
 
 Relay stores delivery-attempt records in the MongoDB `delivery_attempts` collection.
 
-| Field | Purpose |
-|---|---|
-| `event_id` | Associated event |
-| `endpoint_id` | Associated webhook endpoint |
-| `attempt_number` | Attempt sequence number |
-| `started_at` | Attempt start time |
-| `finished_at` | Attempt completion time |
-| `duration_ms` | Attempt duration |
-| `http_status` | HTTP response status, when available |
-| `outcome` | Delivery outcome |
-| `error` | Failure details, when applicable |
+| Field            | Purpose                              |
+| ---------------- | ------------------------------------ |
+| `event_id`       | Associated event                     |
+| `endpoint_id`    | Associated webhook endpoint          |
+| `attempt_number` | Attempt sequence number              |
+| `started_at`     | Attempt start time                   |
+| `finished_at`    | Attempt completion time              |
+| `duration_ms`    | Attempt duration                     |
+| `http_status`    | HTTP response status, when available |
+| `outcome`        | Delivery outcome                     |
+| `error`          | Failure details, when applicable     |
 
 An index on `event_id` and descending `started_at` supports retrieving recent attempts for an event.
 
