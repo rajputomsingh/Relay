@@ -1,387 +1,655 @@
-package main
+package handlers
 
 import (
 	"context"
-	"errors"
+	"crypto/subtle"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/rajputomsingh/relay/internal/config"
-	"github.com/rajputomsingh/relay/internal/database"
-	"github.com/rajputomsingh/relay/internal/delivery"
-	"github.com/rajputomsingh/relay/internal/endpoints"
-	"github.com/rajputomsingh/relay/internal/handlers"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(
-		os.Stdout,
-		&slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		},
-	)))
+const metricsTimeout = 5 * time.Second
 
-	if err := run(); err != nil {
-		slog.Error(
-			"relay stopped",
-			"error", err.Error(),
-			"error_type", fmt.Sprintf("%T", err),
-		)
-		os.Exit(1)
+// Bounded set of delivery statuses. Must stay in sync with the
+// constants defined in internal/delivery/delivery.go.
+var metricDeliveryStatuses = []string{
+	"pending",
+	"processing",
+	"delivered",
+	"failed",
+}
+
+var metricEventStatuses = []string{
+	"pending",
+	"processing",
+	"delivered",
+	"failed",
+	"disabled",
+}
+
+var durationBucketLimitsMS = []int64{
+	100,
+	500,
+	1000,
+	5000,
+	10000,
+}
+
+type metricsSnapshot struct {
+	// Legacy event-level metrics. Kept for backward compatibility
+	// and for operators still tracking legacy events.
+	EventCounts map[string]int64
+
+	// Delivery-level metrics. The primary signal for the
+	// multi-endpoint delivery pipeline.
+	DeliveryCounts         map[string]int64
+	DeliveryEndpointCounts map[string]map[string]int64
+	OldestPendingSeconds   float64
+	OldestPendingKnown     bool
+
+	AttemptsTotal        int64
+	RetriesTotal         int64
+	TerminalFailures     int64
+	DurationBucketCounts map[int64]int64
+	DurationCount        int64
+	DurationSumSeconds   float64
+}
+
+type metricsStore interface {
+	Snapshot(context.Context) (metricsSnapshot, error)
+}
+
+// workerHealth exposes worker liveness signals to the metrics handler.
+type workerHealth interface {
+	LastProcessedAt() time.Time
+	ProcessingErrorsTotal() int64
+}
+
+type mongoMetricsStore struct {
+	events     *mongo.Collection
+	attempts   *mongo.Collection
+	deliveries *mongo.Collection
+}
+
+type MetricsHandler struct {
+	store  metricsStore
+	health workerHealth
+	apiKey string
+}
+
+type durationAggregation struct {
+	Count   int64   `bson:"count"`
+	SumMS   float64 `bson:"sum_ms"`
+	Le100   int64   `bson:"le_100"`
+	Le500   int64   `bson:"le_500"`
+	Le1000  int64   `bson:"le_1000"`
+	Le5000  int64   `bson:"le_5000"`
+	Le10000 int64   `bson:"le_10000"`
+}
+
+type endpointStatusCount struct {
+	EndpointID string `bson:"endpoint_id"`
+	Status     string `bson:"status"`
+	Count      int64  `bson:"count"`
+}
+
+func NewMetricsHandler(
+	eventsCollection *mongo.Collection,
+	attemptsCollection *mongo.Collection,
+	deliveriesCollection *mongo.Collection,
+	apiKey string,
+) *MetricsHandler {
+	return &MetricsHandler{
+		store: &mongoMetricsStore{
+			events:     eventsCollection,
+			attempts:   attemptsCollection,
+			deliveries: deliveriesCollection,
+		},
+		apiKey: apiKey,
 	}
 }
 
-func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
+// WithWorkerHealth attaches a worker health source to the handler.
+// Returns the handler for chaining.
+func (h *MetricsHandler) WithWorkerHealth(health workerHealth) *MetricsHandler {
+	h.health = health
+	return h
+}
+
+func (h *MetricsHandler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/metrics", h.serve)
+}
+
+func (h *MetricsHandler) serve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	startupCtx, cancelStartup := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	client, err := database.Connect(startupCtx, cfg.MongoURI)
-	cancelStartup()
-
-	if err != nil {
-		return fmt.Errorf("MongoDB initialization failed: %w", err)
+	if !h.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 
-	defer func() {
-		ctx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
+	ctx, cancel := context.WithTimeout(r.Context(), metricsTimeout)
+	defer cancel()
+
+	snapshot, err := h.store.Snapshot(ctx)
+	if err != nil {
+		// Do not expose database errors or internal details.
+		http.Error(
+			w,
+			"metrics temporarily unavailable",
+			http.StatusServiceUnavailable,
 		)
-		defer cancel()
+		return
+	}
 
-		if err := client.Disconnect(ctx); err != nil {
-			slog.Error(
-				"MongoDB disconnect failed",
-				"error_type", fmt.Sprintf("%T", err),
+	w.Header().Set(
+		"Content-Type",
+		"text/plain; version=0.0.4; charset=utf-8",
+	)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	writeMetrics(w, snapshot)
+	writeWorkerMetrics(w, h.health)
+}
+
+func (h *MetricsHandler) authorized(r *http.Request) bool {
+	if h.apiKey == "" {
+		return false
+	}
+
+	const bearerPrefix = "Bearer "
+
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, bearerPrefix) {
+		return false
+	}
+
+	providedKey := strings.TrimPrefix(auth, bearerPrefix)
+	if providedKey == "" {
+		return false
+	}
+
+	return subtle.ConstantTimeCompare(
+		[]byte(providedKey),
+		[]byte(h.apiKey),
+	) == 1
+}
+
+func (s *mongoMetricsStore) Snapshot(
+	ctx context.Context,
+) (metricsSnapshot, error) {
+	snapshot := metricsSnapshot{
+		EventCounts: make(
+			map[string]int64, len(metricEventStatuses),
+		),
+		DeliveryCounts: make(
+			map[string]int64, len(metricDeliveryStatuses),
+		),
+		DeliveryEndpointCounts: make(
+			map[string]map[string]int64,
+		),
+		DurationBucketCounts: make(
+			map[int64]int64, len(durationBucketLimitsMS),
+		),
+	}
+
+	// -----------------------------------------------------------------
+	// Legacy event-level metrics (kept for backward compatibility).
+	// -----------------------------------------------------------------
+
+	for _, status := range metricEventStatuses {
+		count, err := s.events.CountDocuments(
+			ctx,
+			bson.D{{Key: "delivery_status", Value: status}},
+		)
+		if err != nil {
+			return metricsSnapshot{}, fmt.Errorf(
+				"count events with status %q: %w",
+				status,
+				err,
 			)
 		}
-	}()
 
-	db := client.Database(cfg.MongoDatabase)
-
-	eventsCollection := db.Collection("events")
-	attemptsCollection := db.Collection("delivery_attempts")
-	endpointsCollection := db.Collection("endpoints")
-	deliveriesCollection := db.Collection("deliveries")
-
-	// Create the unique idempotency index.
-	indexCtx, cancelIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = eventsCollection.Indexes().CreateOne(
-		indexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "idempotency_key", Value: 1},
-			},
-			Options: options.Index().
-				SetUnique(true).
-				SetName("uniq_event_idempotency_key"),
-		},
-	)
-	cancelIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize idempotency index")
+		snapshot.EventCounts[status] = count
 	}
 
-	// Create indexes used by the delivery worker.
-	deliveryIndexCtx, cancelDeliveryIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
+	// -----------------------------------------------------------------
+	// Delivery-level metrics.
+	// -----------------------------------------------------------------
 
-	_, err = eventsCollection.Indexes().CreateMany(
-		deliveryIndexCtx,
-		[]mongo.IndexModel{
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "next_attempt_at", Value: 1},
-					{Key: "received_at", Value: 1},
-				},
-				Options: options.Index().
-					SetName("idx_delivery_due"),
-			},
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "lease_until", Value: 1},
-				},
-				Options: options.Index().
-					SetName("idx_delivery_lease"),
-			},
-		},
-	)
-	cancelDeliveryIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize delivery indexes")
-	}
-
-	// Indexes for event listing and stable cursor pagination.
-	listingIndexCtx, cancelListingIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = eventsCollection.Indexes().CreateMany(
-		listingIndexCtx,
-		[]mongo.IndexModel{
-			{
-				Keys: bson.D{
-					{Key: "received_at", Value: -1},
-					{Key: "_id", Value: -1},
-				},
-				Options: options.Index().
-					SetName("idx_events_received_id"),
-			},
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "received_at", Value: -1},
-					{Key: "_id", Value: -1},
-				},
-				Options: options.Index().
-					SetName("idx_events_status_received_id"),
-			},
-		},
-	)
-	cancelListingIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize event listing indexes")
-	}
-
-	// Index for querying attempts by event and time.
-	attemptIndexCtx, cancelAttemptIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = attemptsCollection.Indexes().CreateOne(
-		attemptIndexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "event_id", Value: 1},
-				{Key: "started_at", Value: -1},
-			},
-			Options: options.Index().
-				SetName("idx_attempts_event_started"),
-		},
-	)
-	cancelAttemptIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize delivery attempt indexes")
-	}
-
-	// Compound index for stable cursor-based attempt pagination.
-	paginationIndexCtx, cancelPaginationIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = attemptsCollection.Indexes().CreateOne(
-		paginationIndexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "event_id", Value: 1},
-				{Key: "started_at", Value: -1},
-				{Key: "_id", Value: -1},
-			},
-			Options: options.Index().
-				SetName("idx_attempts_event_started_id"),
-		},
-	)
-	cancelPaginationIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize attempt pagination index")
-	}
-
-	// Create indexes for the endpoints and deliveries collections.
-	multiIndexCtx, cancelMultiIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	err = database.EnsureMultiEndpointIndexes(multiIndexCtx, db)
-	cancelMultiIndex()
-
-	if err != nil {
-		return fmt.Errorf("failed to initialize multi-endpoint indexes: %w", err)
-	}
-
-	// Bootstrap a default endpoint when a legacy webhook URL is
-	// configured and no endpoints exist yet.
-	endpointStore := endpoints.NewStore(endpointsCollection)
-
-	if err := endpoints.EnsureDefaultEndpoint(
-		context.Background(),
-		endpointStore,
-		endpoints.BootstrapConfig{
-			URL:           cfg.WebhookURL,
-			SigningSecret: cfg.WebhookSigningSecret,
-			MaxAttempts:   cfg.MaxDeliveryAttempts,
-		},
-	); err != nil {
-		return fmt.Errorf("endpoint bootstrap failed: %w", err)
-	}
-
-	// Register HTTP handlers.
-	mux := http.NewServeMux()
-
-	healthHandler := handlers.NewHealthHandler(client)
-	healthHandler.Register(mux)
-
-	fanout := delivery.NewFanout(
-		eventsCollection,
-		endpointsCollection,
-		deliveriesCollection,
-		nil,
-	)
-
-	eventsHandler := handlers.NewEventsHandler(
-		eventsCollection,
-		cfg.RelayAPIKey,
-		fanout,
-	)
-	eventsHandler.Register(mux)
-
-	eventsListHandler := handlers.NewEventsListHandler(
-		eventsCollection,
-		cfg.RelayAPIKey,
-	)
-	eventsListHandler.Register(mux)
-
-	inspectionHandler := handlers.NewInspectionHandler(
-		eventsCollection,
-		attemptsCollection,
-		deliveriesCollection,
-		cfg.RelayAPIKey,
-	)
-
-	metricsHandler := handlers.NewMetricsHandler(
-		eventsCollection,
-		attemptsCollection,
-		deliveriesCollection,
-		cfg.RelayAPIKey,
-	)
-	metricsHandler.Register(mux)
-	inspectionHandler.Register(mux)
-
-	endpointsHandler := handlers.NewEndpointsHandler(
-		endpointStore,
-		cfg.RelayAPIKey,
-	)
-	endpointsHandler.Register(mux)
-
-	server := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	stopCtx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
-	defer stop()
-
-	workerDone := make(chan struct{})
-
-	if cfg.WebhookURL != "" {
-		worker := delivery.NewWorker(
-			eventsCollection,
-			endpointsCollection,
-			deliveriesCollection,
-			attemptsCollection,
-			delivery.Config{
-				PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
-				RequestTimeout: 10 * time.Second,
-				LeaseDuration:  30 * time.Second,
-				Logger:         slog.Default(),
-			},
+	for _, status := range metricDeliveryStatuses {
+		count, err := s.deliveries.CountDocuments(
+			ctx,
+			bson.D{{Key: "status", Value: status}},
 		)
-
-		go func() {
-			defer close(workerDone)
-			worker.Run(stopCtx)
-		}()
-
-		slog.Info("multi-endpoint delivery worker started")
-	} else {
-		close(workerDone)
-		slog.Info(
-			"webhook delivery disabled",
-			"reason", "webhook_url_not_configured",
-		)
-	}
-
-	serverErrors := make(chan error, 1)
-
-	go func() {
-		slog.Info(
-			"relay starting",
-			"environment", cfg.Environment,
-			"port", cfg.Port,
-		)
-		serverErrors <- server.ListenAndServe()
-	}()
-
-	select {
-	case err := <-serverErrors:
-		stop()
-		<-workerDone
-
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+		if err != nil {
+			return metricsSnapshot{}, fmt.Errorf(
+				"count deliveries with status %q: %w",
+				status,
+				err,
+			)
 		}
 
-		return fmt.Errorf("HTTP server failed: %w", err)
+		snapshot.DeliveryCounts[status] = count
+	}
 
-	case <-stopCtx.Done():
-		slog.Info("shutdown signal received")
-
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
+	cursor, err := s.deliveries.Aggregate(
+		ctx,
+		mongo.Pipeline{
+			bson.D{
+				{
+					Key: "$group",
+					Value: bson.D{
+						{
+							Key: "_id",
+							Value: bson.D{
+								{Key: "endpoint_id", Value: "$endpoint_id"},
+								{Key: "status", Value: "$status"},
+							},
+						},
+						{
+							Key: "count",
+							Value: bson.D{
+								{Key: "$sum", Value: 1},
+							},
+						},
+					},
+				},
+			},
+			bson.D{
+				{
+					Key: "$project",
+					Value: bson.D{
+						{Key: "_id", Value: 0},
+						{
+							Key: "endpoint_id",
+							Value: bson.D{
+								{
+									Key:   "$toString",
+									Value: "$_id.endpoint_id",
+								},
+							},
+						},
+						{Key: "status", Value: "$_id.status"},
+						{Key: "count", Value: 1},
+					},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"aggregate deliveries by endpoint: %w",
+			err,
 		)
-		defer cancel()
+	}
+	defer cursor.Close(ctx)
 
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			_ = server.Close()
-			stop()
-			<-workerDone
-			return errors.New("HTTP server shutdown timed out")
+	for cursor.Next(ctx) {
+		var row endpointStatusCount
+		if err := cursor.Decode(&row); err != nil {
+			return metricsSnapshot{}, fmt.Errorf(
+				"decode endpoint delivery aggregate: %w",
+				err,
+			)
 		}
 
-		stop()
-		<-workerDone
-
-		slog.Info("HTTP server shut down gracefully")
-		return nil
+		if snapshot.DeliveryEndpointCounts[row.EndpointID] == nil {
+			snapshot.DeliveryEndpointCounts[row.EndpointID] =
+				make(map[string]int64)
+		}
+		snapshot.DeliveryEndpointCounts[row.EndpointID][row.Status] =
+			row.Count
 	}
+	if err := cursor.Err(); err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"iterate endpoint delivery aggregate: %w",
+			err,
+		)
+	}
+
+	var oldest bson.M
+	err = s.deliveries.FindOne(
+		ctx,
+		bson.D{{Key: "status", Value: "pending"}},
+		options.FindOne().
+			SetSort(bson.D{{Key: "created_at", Value: 1}}).
+			SetProjection(bson.D{{Key: "created_at", Value: 1}}),
+	).Decode(&oldest)
+	if err == nil {
+		if createdAt, ok := oldest["created_at"].(bson.DateTime); ok {
+			snapshot.OldestPendingKnown = true
+			snapshot.OldestPendingSeconds = time.Since(
+				createdAt.Time(),
+			).Seconds()
+		}
+	} else if err != mongo.ErrNoDocuments {
+		return metricsSnapshot{}, fmt.Errorf(
+			"find oldest pending delivery: %w",
+			err,
+		)
+	}
+
+	// -----------------------------------------------------------------
+	// Attempt-history metrics.
+	// -----------------------------------------------------------------
+
+	attemptsTotal, err := s.attempts.CountDocuments(ctx, bson.D{})
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"count delivery attempts: %w",
+			err,
+		)
+	}
+	snapshot.AttemptsTotal = attemptsTotal
+
+	retriesTotal, err := s.attempts.CountDocuments(
+		ctx,
+		bson.D{
+			{
+				Key: "attempt_number",
+				Value: bson.D{
+					{Key: "$gt", Value: 1},
+				},
+			},
+		},
+	)
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"count delivery retries: %w",
+			err,
+		)
+	}
+	snapshot.RetriesTotal = retriesTotal
+
+	terminalFailures, err := s.deliveries.CountDocuments(
+		ctx,
+		bson.D{{Key: "status", Value: "failed"}},
+	)
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"count terminal delivery failures: %w",
+			err,
+		)
+	}
+	snapshot.TerminalFailures = terminalFailures
+
+	groupFields := bson.D{
+		{Key: "_id", Value: nil},
+		{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+		{
+			Key:   "sum_ms",
+			Value: bson.D{{Key: "$sum", Value: "$duration_ms"}},
+		},
+		{Key: "le_100", Value: bucketSum(100)},
+		{Key: "le_500", Value: bucketSum(500)},
+		{Key: "le_1000", Value: bucketSum(1000)},
+		{Key: "le_5000", Value: bucketSum(5000)},
+		{Key: "le_10000", Value: bucketSum(10000)},
+	}
+
+	durCursor, err := s.attempts.Aggregate(
+		ctx,
+		mongo.Pipeline{
+			bson.D{{Key: "$group", Value: groupFields}},
+		},
+	)
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"aggregate delivery durations: %w",
+			err,
+		)
+	}
+	defer durCursor.Close(ctx)
+
+	if durCursor.Next(ctx) {
+		var result durationAggregation
+		if err := durCursor.Decode(&result); err != nil {
+			return metricsSnapshot{}, fmt.Errorf(
+				"decode delivery duration aggregation: %w",
+				err,
+			)
+		}
+
+		snapshot.DurationCount = result.Count
+		snapshot.DurationSumSeconds = result.SumMS / 1000
+
+		snapshot.DurationBucketCounts[100] = result.Le100
+		snapshot.DurationBucketCounts[500] = result.Le500
+		snapshot.DurationBucketCounts[1000] = result.Le1000
+		snapshot.DurationBucketCounts[5000] = result.Le5000
+		snapshot.DurationBucketCounts[10000] = result.Le10000
+	}
+
+	if err := durCursor.Err(); err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"iterate delivery duration aggregation: %w",
+			err,
+		)
+	}
+
+	return snapshot, nil
+}
+
+func bucketSum(limitMS int64) bson.D {
+	return bson.D{
+		{
+			Key: "$sum",
+			Value: bson.D{
+				{
+					Key: "$cond",
+					Value: bson.A{
+						bson.D{
+							{
+								Key: "$lte",
+								Value: bson.A{
+									"$duration_ms",
+									limitMS,
+								},
+							},
+						},
+						1,
+						0,
+					},
+				},
+			},
+		},
+	}
+}
+
+func writeMetrics(w http.ResponseWriter, snapshot metricsSnapshot) {
+	// -----------------------------------------------------------------
+	// Delivery-level metrics.
+	// -----------------------------------------------------------------
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_deliveries Number of delivery records grouped by status.",
+	)
+	_, _ = fmt.Fprintln(w, "# TYPE relay_deliveries gauge")
+
+	for _, status := range metricDeliveryStatuses {
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_deliveries{status=%s} %d\n",
+			strconv.Quote(status),
+			snapshot.DeliveryCounts[status],
+		)
+	}
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_deliveries_per_endpoint Number of delivery records grouped by endpoint and status.",
+	)
+	_, _ = fmt.Fprintln(w, "# TYPE relay_deliveries_per_endpoint gauge")
+
+	for endpointID, statuses := range snapshot.DeliveryEndpointCounts {
+		for _, status := range metricDeliveryStatuses {
+			_, _ = fmt.Fprintf(
+				w,
+				"relay_deliveries_per_endpoint{endpoint_id=%s,status=%s} %d\n",
+				strconv.Quote(endpointID),
+				strconv.Quote(status),
+				statuses[status],
+			)
+		}
+	}
+
+	if snapshot.OldestPendingKnown {
+		_, _ = fmt.Fprintln(
+			w,
+			"# HELP relay_deliveries_oldest_pending_seconds Age in seconds of the oldest pending delivery.",
+		)
+		_, _ = fmt.Fprintln(
+			w,
+			"# TYPE relay_deliveries_oldest_pending_seconds gauge",
+		)
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_deliveries_oldest_pending_seconds %g\n",
+			snapshot.OldestPendingSeconds,
+		)
+	}
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_deliveries_terminal_failures Number of deliveries that reached the failed state.",
+	)
+	_, _ = fmt.Fprintln(
+		w,
+		"# TYPE relay_deliveries_terminal_failures gauge",
+	)
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_deliveries_terminal_failures %d\n",
+		snapshot.TerminalFailures,
+	)
+
+	// -----------------------------------------------------------------
+	// Legacy event-level metrics.
+	// -----------------------------------------------------------------
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_events Number of events grouped by delivery status (legacy).",
+	)
+	_, _ = fmt.Fprintln(w, "# TYPE relay_events gauge")
+
+	for _, status := range metricEventStatuses {
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_events{status=%s} %d\n",
+			strconv.Quote(status),
+			snapshot.EventCounts[status],
+		)
+	}
+
+	// -----------------------------------------------------------------
+	// Attempt-history metrics.
+	// -----------------------------------------------------------------
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_delivery_attempts Number of persisted delivery attempt records.",
+	)
+	_, _ = fmt.Fprintln(w, "# TYPE relay_delivery_attempts gauge")
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_delivery_attempts %d\n",
+		snapshot.AttemptsTotal,
+	)
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_delivery_retries Number of persisted attempts numbered greater than one.",
+	)
+	_, _ = fmt.Fprintln(w, "# TYPE relay_delivery_retries gauge")
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_delivery_retries %d\n",
+		snapshot.RetriesTotal,
+	)
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_delivery_duration_seconds Duration of persisted webhook delivery attempts in seconds.",
+	)
+	_, _ = fmt.Fprintln(
+		w,
+		"# TYPE relay_delivery_duration_seconds histogram",
+	)
+
+	for _, limitMS := range durationBucketLimitsMS {
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_delivery_duration_seconds_bucket{le=%s} %d\n",
+			strconv.Quote(strconv.FormatInt(limitMS, 10)),
+			snapshot.DurationBucketCounts[limitMS],
+		)
+	}
+
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_delivery_duration_seconds_bucket{le=%s} %d\n",
+		strconv.Quote("+Inf"),
+		snapshot.DurationCount,
+	)
+
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_delivery_duration_seconds_sum %g\n",
+		snapshot.DurationSumSeconds,
+	)
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_delivery_duration_seconds_count %d\n",
+		snapshot.DurationCount,
+	)
+}
+
+func writeWorkerMetrics(w http.ResponseWriter, health workerHealth) {
+	if health == nil {
+		return
+	}
+
+	lastProcessed := health.LastProcessedAt()
+	if !lastProcessed.IsZero() {
+		_, _ = fmt.Fprintln(
+			w,
+			"# HELP relay_worker_last_processed_timestamp_seconds Unix timestamp of the most recent successful processing cycle.",
+		)
+		_, _ = fmt.Fprintln(
+			w,
+			"# TYPE relay_worker_last_processed_timestamp_seconds gauge",
+		)
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_worker_last_processed_timestamp_seconds %d\n",
+			lastProcessed.Unix(),
+		)
+	}
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_worker_processing_errors_total Count of non-transient errors during processing.",
+	)
+	_, _ = fmt.Fprintln(
+		w,
+		"# TYPE relay_worker_processing_errors_total gauge",
+	)
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_worker_processing_errors_total %d\n",
+		health.ProcessingErrorsTotal(),
+	)
 }

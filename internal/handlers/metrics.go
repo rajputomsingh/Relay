@@ -65,6 +65,12 @@ type metricsStore interface {
 	Snapshot(context.Context) (metricsSnapshot, error)
 }
 
+// workerHealth exposes worker liveness signals to the metrics handler.
+type workerHealth interface {
+	LastProcessedAt() time.Time
+	ProcessingErrorsTotal() int64
+}
+
 type mongoMetricsStore struct {
 	events     *mongo.Collection
 	attempts   *mongo.Collection
@@ -73,9 +79,9 @@ type mongoMetricsStore struct {
 
 type MetricsHandler struct {
 	store  metricsStore
+	health workerHealth
 	apiKey string
 }
-
 type durationAggregation struct {
 	Count   int64   `bson:"count"`
 	SumMS   float64 `bson:"sum_ms"`

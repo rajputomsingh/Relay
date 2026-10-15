@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
@@ -40,6 +41,11 @@ type Worker struct {
 	config     Config
 	logger     *slog.Logger
 	client     *http.Client
+
+	// Health signals. Written by the Run loop, read by the metrics handler.
+	healthMu              sync.RWMutex
+	lastProcessedAt       time.Time
+	processingErrorsTotal int64
 }
 
 // claimResult carries the delivery plus its loaded event and endpoint.
@@ -138,7 +144,18 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		}
 
-		if err := w.processOne(ctx); err != nil &&
+		err := w.processOne(ctx)
+
+		w.healthMu.Lock()
+		if err == nil {
+			w.lastProcessedAt = time.Now().UTC()
+		} else if !errors.Is(err, mongo.ErrNoDocuments) &&
+			ctx.Err() == nil {
+			w.processingErrorsTotal++
+		}
+		w.healthMu.Unlock()
+
+		if err != nil &&
 			!errors.Is(err, mongo.ErrNoDocuments) &&
 			ctx.Err() == nil {
 			w.logger.Error(
@@ -154,6 +171,22 @@ func (w *Worker) Run(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// LastProcessedAt returns the timestamp of the most recent successful
+// processing cycle. Zero if the worker has not yet completed a cycle.
+func (w *Worker) LastProcessedAt() time.Time {
+	w.healthMu.RLock()
+	defer w.healthMu.RUnlock()
+	return w.lastProcessedAt
+}
+
+// ProcessingErrorsTotal returns the count of non-ErrNoDocuments errors
+// encountered during processing since the worker started.
+func (w *Worker) ProcessingErrorsTotal() int64 {
+	w.healthMu.RLock()
+	defer w.healthMu.RUnlock()
+	return w.processingErrorsTotal
 }
 
 // claim atomically assigns one due delivery to this worker.
