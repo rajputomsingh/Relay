@@ -1,4 +1,4 @@
-package delivery
+﻿package delivery
 
 import (
 	"bytes"
@@ -1375,4 +1375,100 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 
 	cancel()
 	<-workerDone
+}
+
+// ---------------------------------------------------------------
+// Rate limit release
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationReleaseClaimFencedByLeaseToken(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+
+	stale := Delivery{
+		ID:         deliveryID,
+		LeaseToken: "stale-token",
+	}
+
+	if err := worker.releaseClaim(
+		context.Background(), stale,
+	); err != nil {
+		t.Fatalf("release stale claim: %v", err)
+	}
+
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusPending {
+		t.Errorf(
+			"status = %q; want pending (unchanged)",
+			state.Status,
+		)
+	}
+	if state.Attempts != 0 {
+		t.Errorf(
+			"attempts = %d; want 0 (unchanged)",
+			state.Attempts,
+		)
+	}
+}
+
+func TestWorkerIntegrationReleaseClaimDoesNotConsumeAttempt(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	claim, err := worker.claim(ctx)
+	if err != nil {
+		t.Fatalf("claim delivery: %v", err)
+	}
+
+	if err := worker.releaseClaim(
+		context.Background(), claim.Delivery,
+	); err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusPending {
+		t.Errorf("status = %q; want pending", state.Status)
+	}
+	if state.Attempts != 0 {
+		t.Errorf(
+			"attempts = %d; want 0 (release must not consume an attempt)",
+			state.Attempts,
+		)
+	}
+	if state.LeaseUntil != nil {
+		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
+	}
+	if state.NextAttemptAt != nil {
+		t.Errorf(
+			"next_attempt_at = %v; want unset (release is not a failure)",
+			state.NextAttemptAt,
+		)
+	}
+	if state.LastError != "" {
+		t.Errorf("last_error = %q; want empty", state.LastError)
+	}
 }

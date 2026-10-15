@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestRetryDelay(t *testing.T) {
@@ -170,5 +172,74 @@ func TestValidateConfig(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------
+// Rate limiter
+// ---------------------------------------------------------------
+
+func TestRateLimiterUnlimited(t *testing.T) {
+	rl := newRateLimiter()
+	id := bson.NewObjectID()
+
+	for i := 0; i < 1000; i++ {
+		if !rl.allow(id, 0) {
+			t.Fatalf("unlimited limiter denied request %d", i)
+		}
+	}
+}
+
+func TestRateLimiterRespectsRate(t *testing.T) {
+	rl := newRateLimiter()
+	id := bson.NewObjectID()
+
+	const rps = 5
+
+	for i := 0; i < rps; i++ {
+		if !rl.allow(id, rps) {
+			t.Fatalf("request %d within capacity was denied", i)
+		}
+	}
+
+	if rl.allow(id, rps) {
+		t.Fatal("request beyond capacity was allowed")
+	}
+}
+
+func TestRateLimiterRefillsOverTime(t *testing.T) {
+	rl := newRateLimiter()
+	id := bson.NewObjectID()
+
+	const rps = 10
+
+	for i := 0; i < rps; i++ {
+		rl.allow(id, rps)
+	}
+	if rl.allow(id, rps) {
+		t.Fatal("bucket should be empty")
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if !rl.allow(id, rps) {
+		t.Fatal("bucket should have refilled at least one token")
+	}
+}
+
+func TestRateLimiterIndependentPerEndpoint(t *testing.T) {
+	rl := newRateLimiter()
+	a := bson.NewObjectID()
+	b := bson.NewObjectID()
+
+	for i := 0; i < 3; i++ {
+		rl.allow(a, 3)
+	}
+	if rl.allow(a, 3) {
+		t.Fatal("A should be exhausted")
+	}
+
+	if !rl.allow(b, 3) {
+		t.Fatal("B should have full capacity")
 	}
 }

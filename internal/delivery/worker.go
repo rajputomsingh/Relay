@@ -24,8 +24,8 @@ import (
 
 // Config controls the multi-endpoint delivery worker.
 //
-// Per-endpoint settings (URL, signing secret, retry limit, event filter)
-// live on the endpoint document and are read at claim time.
+// Per-endpoint settings (URL, signing secret, retry limit, event filter,
+// rate limit) live on the endpoint document and are read at claim time.
 type Config struct {
 	PollInterval   time.Duration
 	RequestTimeout time.Duration
@@ -37,17 +37,18 @@ type Config struct {
 // Worker processes deliveries for every enabled endpoint.
 //
 // Each Run call spawns Config.Concurrency independent goroutines. They
-// share no state beyond the MongoDB collections; coordination happens
-// entirely through the atomic claim operation on the deliveries
-// collection.
+// share no state beyond the MongoDB collections and a per-endpoint rate
+// limiter; coordination on deliveries happens entirely through the
+// atomic claim operation.
 type Worker struct {
-	events     *mongo.Collection
-	endpoints  *mongo.Collection
-	deliveries *mongo.Collection
-	attempts   *mongo.Collection
-	config     Config
-	logger     *slog.Logger
-	client     *http.Client
+	events      *mongo.Collection
+	endpoints   *mongo.Collection
+	deliveries  *mongo.Collection
+	attempts    *mongo.Collection
+	config      Config
+	logger      *slog.Logger
+	client      *http.Client
+	rateLimiter *rateLimiter
 
 	// Health signals. Written by the worker loop, read by the metrics
 	// handler.
@@ -98,12 +99,13 @@ func NewWorker(
 	}
 
 	return &Worker{
-		events:     events,
-		endpoints:  endpointsCollection,
-		deliveries: deliveries,
-		attempts:   attempts,
-		config:     cfg,
-		logger:     logger,
+		events:      events,
+		endpoints:   endpointsCollection,
+		deliveries:  deliveries,
+		attempts:    attempts,
+		config:      cfg,
+		logger:      logger,
+		rateLimiter: newRateLimiter(),
 		client: &http.Client{
 			Timeout: cfg.RequestTimeout,
 			CheckRedirect: func(
@@ -135,10 +137,6 @@ func (w *Worker) validateConfig() error {
 }
 
 // Run starts the bounded worker pool and blocks until ctx is cancelled.
-//
-// Each goroutine runs an independent workerLoop that polls for due
-// deliveries. Because claim is atomic, the goroutines naturally
-// distribute work without coordinating.
 func (w *Worker) Run(ctx context.Context) {
 	if err := w.validateConfig(); err != nil {
 		w.logger.Error(
@@ -390,6 +388,26 @@ func (w *Worker) processOne(ctx context.Context) error {
 	event := claim.Event
 	endpoint := claim.Endpoint
 
+	// Rate limit check. If the endpoint has no available token, release
+	// the claim without consuming an attempt and let a later poll cycle
+	// retry.
+	if !w.rateLimiter.allow(endpoint.ID, endpoint.RateLimitRPS) {
+		w.logger.Info(
+			"delivery deferred by endpoint rate limit",
+			"delivery_id", delivery.ID.Hex(),
+			"endpoint_id", endpoint.ID.Hex(),
+			"rate_limit_rps", endpoint.RateLimitRPS,
+		)
+		if err := w.releaseClaim(ctx, delivery); err != nil {
+			w.logger.Error(
+				"failed to release rate-limited claim",
+				"delivery_id", delivery.ID.Hex(),
+				"error_type", fmt.Sprintf("%T", err),
+			)
+		}
+		return mongo.ErrNoDocuments
+	}
+
 	w.inFlight.Add(1)
 	defer w.inFlight.Add(-1)
 
@@ -525,6 +543,44 @@ func (w *Worker) processOne(ctx context.Context) error {
 
 	outcome = "delivered"
 	return w.recordSuccess(ctx, delivery)
+}
+
+// releaseClaim returns a claimed delivery to the pending state without
+// consuming an attempt or recording a failure. Fenced by the lease
+// token so a stale worker cannot clobber a newer claim.
+func (w *Worker) releaseClaim(
+	ctx context.Context,
+	delivery Delivery,
+) error {
+	now := time.Now().UTC()
+
+	result, err := w.deliveries.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":         delivery.ID,
+			"status":      StatusProcessing,
+			"lease_token": delivery.LeaseToken,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status":     StatusPending,
+				"updated_at": now,
+			},
+			"$unset": bson.M{
+				"lease_until": "",
+				"lease_token": "",
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("release claimed delivery: %w", err)
+	}
+	if result.MatchedCount == 0 {
+		// The lease was replaced by another worker. Do not fight it.
+		return nil
+	}
+
+	return nil
 }
 
 // recordSuccess marks the delivery delivered, fenced by lease token.
