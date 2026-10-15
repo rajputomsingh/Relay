@@ -241,6 +241,7 @@ func run() error {
 			URL:           cfg.WebhookURL,
 			SigningSecret: cfg.WebhookSigningSecret,
 			MaxAttempts:   cfg.MaxDeliveryAttempts,
+			RateLimitRPS:  0,
 		},
 	); err != nil {
 		return fmt.Errorf("endpoint bootstrap failed: %w", err)

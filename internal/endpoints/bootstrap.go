@@ -13,6 +13,7 @@ type BootstrapConfig struct {
 	URL           string
 	SigningSecret string
 	MaxAttempts   int
+	RateLimitRPS  int
 }
 
 // EnsureDefaultEndpoint creates a default endpoint from legacy configuration
@@ -41,6 +42,7 @@ func EnsureDefaultEndpoint(
 		SigningSecret: cfg.SigningSecret,
 		Enabled:       true,
 		MaxAttempts:   cfg.MaxAttempts,
+		RateLimitRPS:  cfg.RateLimitRPS,
 	}
 
 	if ep.MaxAttempts < 1 {
