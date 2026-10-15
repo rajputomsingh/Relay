@@ -69,6 +69,7 @@ func newMongoMetricsIntegration(
 	handler := NewMetricsHandler(
 		db.Collection("events"),
 		db.Collection("delivery_attempts"),
+		db.Collection("deliveries"),
 		"metrics-integration-test-key",
 	)
 

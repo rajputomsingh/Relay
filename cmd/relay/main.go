@@ -282,6 +282,7 @@ func run() error {
 	metricsHandler := handlers.NewMetricsHandler(
 		eventsCollection,
 		attemptsCollection,
+		deliveriesCollection,
 		cfg.RelayAPIKey,
 	)
 	metricsHandler.Register(mux)
