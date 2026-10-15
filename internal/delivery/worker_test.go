@@ -11,6 +11,7 @@ func TestRetryDelay(t *testing.T) {
 		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
+		Concurrency:    1,
 	})
 
 	tests := []struct {
@@ -47,6 +48,7 @@ func TestWorkerDoesNotFollowRedirects(t *testing.T) {
 		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
+		Concurrency:    1,
 	})
 
 	req, err := http.NewRequest(
@@ -69,8 +71,8 @@ func TestValidateConfig(t *testing.T) {
 		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
+		Concurrency:    1,
 	}
-
 	tests := []struct {
 		name    string
 		modify  func(*Config)
@@ -126,6 +128,27 @@ func TestValidateConfig(t *testing.T) {
 			name: "lease equals request timeout",
 			modify: func(c *Config) {
 				c.LeaseDuration = c.RequestTimeout
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero concurrency",
+			modify: func(c *Config) {
+				c.Concurrency = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative concurrency",
+			modify: func(c *Config) {
+				c.Concurrency = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "concurrency above maximum",
+			modify: func(c *Config) {
+				c.Concurrency = 33
 			},
 			wantErr: true,
 		},
