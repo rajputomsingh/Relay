@@ -16,8 +16,6 @@ import (
 
 const metricsTimeout = 5 * time.Second
 
-// Bounded set of delivery statuses. Must stay in sync with the
-// constants defined in internal/delivery/delivery.go.
 var metricDeliveryStatuses = []string{
 	"pending",
 	"processing",
@@ -42,20 +40,16 @@ var durationBucketLimitsMS = []int64{
 }
 
 type metricsSnapshot struct {
-	// Legacy event-level metrics. Kept for backward compatibility
-	// and for operators still tracking legacy events.
-	EventCounts map[string]int64
-
-	// Delivery-level metrics. The primary signal for the
-	// multi-endpoint delivery pipeline.
 	DeliveryCounts         map[string]int64
-	DeliveryEndpointCounts map[string]map[string]int64 // endpoint_id -> status -> count
+	DeliveryEndpointCounts map[string]map[string]int64
 	OldestPendingSeconds   float64
 	OldestPendingKnown     bool
+	TerminalFailures       int64
+
+	EventCounts map[string]int64
 
 	AttemptsTotal        int64
 	RetriesTotal         int64
-	TerminalFailures     int64
 	DurationBucketCounts map[int64]int64
 	DurationCount        int64
 	DurationSumSeconds   float64
@@ -65,7 +59,9 @@ type metricsStore interface {
 	Snapshot(context.Context) (metricsSnapshot, error)
 }
 
-// workerHealth exposes worker liveness signals to the metrics handler.
+// workerHealth is the subset of delivery.Worker that the metrics
+// handler reads. Declared as an interface to keep internal/handlers
+// free of a dependency on internal/delivery.
 type workerHealth interface {
 	LastProcessedAt() time.Time
 	ProcessingErrorsTotal() int64
@@ -82,6 +78,7 @@ type MetricsHandler struct {
 	health workerHealth
 	apiKey string
 }
+
 type durationAggregation struct {
 	Count   int64   `bson:"count"`
 	SumMS   float64 `bson:"sum_ms"`
@@ -114,6 +111,13 @@ func NewMetricsHandler(
 	}
 }
 
+// WithWorkerHealth attaches a worker health source. Returns the handler
+// to allow chaining. Health metrics are skipped when not attached.
+func (h *MetricsHandler) WithWorkerHealth(health workerHealth) *MetricsHandler {
+	h.health = health
+	return h
+}
+
 func (h *MetricsHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/metrics", h.serve)
 }
@@ -134,7 +138,6 @@ func (h *MetricsHandler) serve(w http.ResponseWriter, r *http.Request) {
 
 	snapshot, err := h.store.Snapshot(ctx)
 	if err != nil {
-		// Do not expose database errors or internal details.
 		http.Error(
 			w,
 			"metrics temporarily unavailable",
@@ -151,6 +154,7 @@ func (h *MetricsHandler) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	writeMetrics(w, snapshot)
+	writeWorkerMetrics(w, h.health)
 }
 
 func (h *MetricsHandler) authorized(r *http.Request) bool {
@@ -194,32 +198,6 @@ func (s *mongoMetricsStore) Snapshot(
 		),
 	}
 
-	// -----------------------------------------------------------------
-	// Legacy event-level metrics (kept for backward compatibility).
-	// -----------------------------------------------------------------
-
-	for _, status := range metricEventStatuses {
-		count, err := s.events.CountDocuments(
-			ctx,
-			bson.D{{Key: "delivery_status", Value: status}},
-		)
-		if err != nil {
-			return metricsSnapshot{}, fmt.Errorf(
-				"count events with status %q: %w",
-				status,
-				err,
-			)
-		}
-
-		snapshot.EventCounts[status] = count
-	}
-
-	// -----------------------------------------------------------------
-	// Delivery-level metrics. Primary source of truth after
-	// multi-endpoint delivery moved lifecycle state onto the
-	// deliveries collection.
-	// -----------------------------------------------------------------
-
 	for _, status := range metricDeliveryStatuses {
 		count, err := s.deliveries.CountDocuments(
 			ctx,
@@ -236,51 +214,40 @@ func (s *mongoMetricsStore) Snapshot(
 		snapshot.DeliveryCounts[status] = count
 	}
 
-	// Per-endpoint status counts. Grouped so one round-trip returns
-	// every endpoint/status combination. Cardinality is bounded by
-	// (number of endpoints × number of statuses).
 	cursor, err := s.deliveries.Aggregate(
 		ctx,
 		mongo.Pipeline{
-			bson.D{
-				{
-					Key: "$group",
-					Value: bson.D{
-						{
-							Key: "_id",
-							Value: bson.D{
-								{Key: "endpoint_id", Value: "$endpoint_id"},
-								{Key: "status", Value: "$status"},
-							},
-						},
-						{
-							Key: "count",
-							Value: bson.D{
-								{Key: "$sum", Value: 1},
-							},
+			bson.D{{
+				Key: "$group",
+				Value: bson.D{
+					{
+						Key: "_id",
+						Value: bson.D{
+							{Key: "endpoint_id", Value: "$endpoint_id"},
+							{Key: "status", Value: "$status"},
 						},
 					},
-				},
-			},
-			bson.D{
-				{
-					Key: "$project",
-					Value: bson.D{
-						{Key: "_id", Value: 0},
-						{
-							Key: "endpoint_id",
-							Value: bson.D{
-								{
-									Key:   "$toString",
-									Value: "$_id.endpoint_id",
-								},
-							},
-						},
-						{Key: "status", Value: "$_id.status"},
-						{Key: "count", Value: 1},
+					{
+						Key:   "count",
+						Value: bson.D{{Key: "$sum", Value: 1}},
 					},
 				},
-			},
+			}},
+			bson.D{{
+				Key: "$project",
+				Value: bson.D{
+					{Key: "_id", Value: 0},
+					{
+						Key: "endpoint_id",
+						Value: bson.D{{
+							Key:   "$toString",
+							Value: "$_id.endpoint_id",
+						}},
+					},
+					{Key: "status", Value: "$_id.status"},
+					{Key: "count", Value: 1},
+				},
+			}},
 		},
 	)
 	if err != nil {
@@ -314,8 +281,6 @@ func (s *mongoMetricsStore) Snapshot(
 		)
 	}
 
-	// Oldest due pending delivery age, in seconds. Only meaningful
-	// when at least one pending delivery exists.
 	var oldest bson.M
 	err = s.deliveries.FindOne(
 		ctx,
@@ -324,23 +289,48 @@ func (s *mongoMetricsStore) Snapshot(
 			SetSort(bson.D{{Key: "created_at", Value: 1}}).
 			SetProjection(bson.D{{Key: "created_at", Value: 1}}),
 	).Decode(&oldest)
-	if err == nil {
+	switch {
+	case err == nil:
 		if createdAt, ok := oldest["created_at"].(bson.DateTime); ok {
 			snapshot.OldestPendingKnown = true
 			snapshot.OldestPendingSeconds = time.Since(
 				createdAt.Time(),
 			).Seconds()
 		}
-	} else if err != mongo.ErrNoDocuments {
+	case err != mongo.ErrNoDocuments:
 		return metricsSnapshot{}, fmt.Errorf(
 			"find oldest pending delivery: %w",
 			err,
 		)
 	}
 
-	// -----------------------------------------------------------------
-	// Attempt-history metrics (unchanged).
-	// -----------------------------------------------------------------
+	terminalFailures, err := s.deliveries.CountDocuments(
+		ctx,
+		bson.D{{Key: "status", Value: "failed"}},
+	)
+	if err != nil {
+		return metricsSnapshot{}, fmt.Errorf(
+			"count terminal delivery failures: %w",
+			err,
+		)
+	}
+	snapshot.TerminalFailures = terminalFailures
+
+	for _, status := range metricEventStatuses {
+		count, err := s.events.CountDocuments(
+			ctx,
+			bson.D{{Key: "delivery_status", Value: status}},
+		)
+		if err != nil {
+			return metricsSnapshot{}, fmt.Errorf(
+				"count events with status %q: %w",
+				status,
+				err,
+			)
+		}
+
+		snapshot.EventCounts[status] = count
+	}
 
 	attemptsTotal, err := s.attempts.CountDocuments(ctx, bson.D{})
 	if err != nil {
@@ -353,14 +343,13 @@ func (s *mongoMetricsStore) Snapshot(
 
 	retriesTotal, err := s.attempts.CountDocuments(
 		ctx,
-		bson.D{
-			{
-				Key: "attempt_number",
-				Value: bson.D{
-					{Key: "$gt", Value: 1},
-				},
-			},
-		},
+		bson.D{{
+			Key: "attempt_number",
+			Value: bson.D{{
+				Key:   "$gt",
+				Value: 1,
+			}},
+		}},
 	)
 	if err != nil {
 		return metricsSnapshot{}, fmt.Errorf(
@@ -369,21 +358,6 @@ func (s *mongoMetricsStore) Snapshot(
 		)
 	}
 	snapshot.RetriesTotal = retriesTotal
-
-	// Terminal failures: deliveries that ended in a failed state.
-	// Distinct from total failed attempts because retries can
-	// accumulate before reaching a terminal failure.
-	terminalFailures, err := s.deliveries.CountDocuments(
-		ctx,
-		bson.D{{Key: "status", Value: "failed"}},
-	)
-	if err != nil {
-		return metricsSnapshot{}, fmt.Errorf(
-			"count terminal delivery failures: %w",
-			err,
-		)
-	}
-	snapshot.TerminalFailures = terminalFailures
 
 	groupFields := bson.D{
 		{Key: "_id", Value: nil},
@@ -443,36 +417,26 @@ func (s *mongoMetricsStore) Snapshot(
 }
 
 func bucketSum(limitMS int64) bson.D {
-	return bson.D{
-		{
-			Key: "$sum",
-			Value: bson.D{
-				{
-					Key: "$cond",
+	return bson.D{{
+		Key: "$sum",
+		Value: bson.D{{
+			Key: "$cond",
+			Value: bson.A{
+				bson.D{{
+					Key: "$lte",
 					Value: bson.A{
-						bson.D{
-							{
-								Key: "$lte",
-								Value: bson.A{
-									"$duration_ms",
-									limitMS,
-								},
-							},
-						},
-						1,
-						0,
+						"$duration_ms",
+						limitMS,
 					},
-				},
+				}},
+				1,
+				0,
 			},
-		},
-	}
+		}},
+	}}
 }
 
 func writeMetrics(w http.ResponseWriter, snapshot metricsSnapshot) {
-	// -----------------------------------------------------------------
-	// Delivery-level metrics. Primary signal.
-	// -----------------------------------------------------------------
-
 	_, _ = fmt.Fprintln(
 		w,
 		"# HELP relay_deliveries Number of delivery records grouped by status.",
@@ -536,10 +500,6 @@ func writeMetrics(w http.ResponseWriter, snapshot metricsSnapshot) {
 		snapshot.TerminalFailures,
 	)
 
-	// -----------------------------------------------------------------
-	// Legacy event-level metrics.
-	// -----------------------------------------------------------------
-
 	_, _ = fmt.Fprintln(
 		w,
 		"# HELP relay_events Number of events grouped by delivery status (legacy).",
@@ -554,10 +514,6 @@ func writeMetrics(w http.ResponseWriter, snapshot metricsSnapshot) {
 			snapshot.EventCounts[status],
 		)
 	}
-
-	// -----------------------------------------------------------------
-	// Attempt-history metrics.
-	// -----------------------------------------------------------------
 
 	_, _ = fmt.Fprintln(
 		w,
@@ -615,5 +571,44 @@ func writeMetrics(w http.ResponseWriter, snapshot metricsSnapshot) {
 		w,
 		"relay_delivery_duration_seconds_count %d\n",
 		snapshot.DurationCount,
+	)
+}
+
+// writeWorkerMetrics emits worker liveness gauges. Skipped when no
+// health source is attached.
+func writeWorkerMetrics(w http.ResponseWriter, health workerHealth) {
+	if health == nil {
+		return
+	}
+
+	lastProcessed := health.LastProcessedAt()
+	if !lastProcessed.IsZero() {
+		_, _ = fmt.Fprintln(
+			w,
+			"# HELP relay_worker_last_processed_timestamp_seconds Unix timestamp of the most recent successful processing cycle.",
+		)
+		_, _ = fmt.Fprintln(
+			w,
+			"# TYPE relay_worker_last_processed_timestamp_seconds gauge",
+		)
+		_, _ = fmt.Fprintf(
+			w,
+			"relay_worker_last_processed_timestamp_seconds %d\n",
+			lastProcessed.Unix(),
+		)
+	}
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_worker_processing_errors_total Count of non-transient errors during processing.",
+	)
+	_, _ = fmt.Fprintln(
+		w,
+		"# TYPE relay_worker_processing_errors_total gauge",
+	)
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_worker_processing_errors_total %d\n",
+		health.ProcessingErrorsTotal(),
 	)
 }
