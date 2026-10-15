@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,6 +252,7 @@ func newIntegrationWorker(
 			PollInterval:   pollInterval,
 			RequestTimeout: 3 * time.Second,
 			LeaseDuration:  30 * time.Second,
+			Concurrency:    1,
 		},
 	)
 }
@@ -1129,6 +1131,7 @@ func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
 			PollInterval:   10 * time.Millisecond,
 			RequestTimeout: 3 * time.Second,
 			LeaseDuration:  30 * time.Second,
+			Concurrency:    1,
 			Logger:         logger,
 		},
 	)
@@ -1167,4 +1170,209 @@ func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
 	if !strings.Contains(logs.String(), "delivery worker stopped") {
 		t.Fatal("expected worker shutdown log")
 	}
+}
+
+// ---------------------------------------------------------------
+// Bounded concurrency
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	const (
+		workers         = 4
+		deliveriesTotal = 12
+		handlerDelay    = 200 * time.Millisecond
+	)
+
+	var (
+		current atomic.Int64
+		peak    atomic.Int64
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		now := current.Add(1)
+		defer current.Add(-1)
+
+		for {
+			observed := peak.Load()
+			if now <= observed {
+				break
+			}
+			if peak.CompareAndSwap(observed, now) {
+				break
+			}
+		}
+
+		time.Sleep(handlerDelay)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+
+	for i := 0; i < deliveriesTotal; i++ {
+		eventID := insertWorkerIntegrationEvent(t, db.events)
+		insertWorkerIntegrationDelivery(
+			t, db.deliveries, eventID, endpointID, 3,
+		)
+	}
+
+	worker := NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   10 * time.Millisecond,
+			RequestTimeout: 5 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Concurrency:    workers,
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 15*time.Second,
+	)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+
+	deadline := time.After(15 * time.Second)
+	for {
+		delivered, err := db.deliveries.CountDocuments(
+			context.Background(),
+			bson.M{"status": StatusDelivered},
+		)
+		if err != nil {
+			t.Fatalf("count delivered: %v", err)
+		}
+		if delivered == int64(deliveriesTotal) {
+			break
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf(
+				"only %d/%d deliveries reached delivered state",
+				delivered, deliveriesTotal,
+			)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+
+	observedPeak := peak.Load()
+	if observedPeak > int64(workers) {
+		t.Errorf(
+			"observed %d concurrent HTTP requests; "+
+				"concurrency limit is %d",
+			observedPeak, workers,
+		)
+	}
+}
+
+func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	requestStarted := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseHandler) })
+	}
+	defer release()
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		close(requestStarted)
+		<-releaseHandler
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, server.URL, "", 3,
+	)
+	insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   50 * time.Millisecond,
+			RequestTimeout: 5 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Concurrency:    1,
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		worker.Run(ctx)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("worker did not start the webhook request")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if worker.InFlightDeliveries() == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf(
+				"in-flight deliveries = %d; want 1 during request",
+				worker.InFlightDeliveries(),
+			)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	release()
+
+	deadline = time.After(2 * time.Second)
+	for {
+		if worker.InFlightDeliveries() == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf(
+				"in-flight deliveries = %d; want 0 after release",
+				worker.InFlightDeliveries(),
+			)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-workerDone
 }
