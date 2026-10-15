@@ -150,6 +150,45 @@ func insertWorkerIntegrationEndpoint(
 	return id
 }
 
+// insertWorkerIntegrationEndpointWithRateLimit inserts an enabled
+// endpoint with the given rate limit.
+func insertWorkerIntegrationEndpointWithRateLimit(
+	t *testing.T,
+	collection *mongo.Collection,
+	url string,
+	secret string,
+	maxAttempts int,
+	rateLimitRPS int,
+) bson.ObjectID {
+	t.Helper()
+
+	id := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	ep := bson.M{
+		"_id":            id,
+		"name":           "test-" + id.Hex(),
+		"url":            url,
+		"enabled":        true,
+		"max_attempts":   maxAttempts,
+		"rate_limit_rps": rateLimitRPS,
+		"created_at":     now,
+		"updated_at":     now,
+	}
+	if secret != "" {
+		ep["signing_secret"] = secret
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := collection.InsertOne(ctx, ep); err != nil {
+		t.Fatalf("insert integration endpoint: %v", err)
+	}
+
+	return id
+}
+
 // insertWorkerIntegrationDelivery inserts a due delivery.
 func insertWorkerIntegrationDelivery(
 	t *testing.T,
@@ -1375,4 +1414,293 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 
 	cancel()
 	<-workerDone
+}
+
+// ---------------------------------------------------------------
+// Rate limit release
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationReleaseClaimFencedByLeaseToken(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+
+	stale := Delivery{
+		ID:         deliveryID,
+		LeaseToken: "stale-token",
+	}
+
+	if err := worker.releaseClaim(
+		context.Background(), stale,
+	); err != nil {
+		t.Fatalf("release stale claim: %v", err)
+	}
+
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusPending {
+		t.Errorf(
+			"status = %q; want pending (unchanged)",
+			state.Status,
+		)
+	}
+	if state.Attempts != 0 {
+		t.Errorf(
+			"attempts = %d; want 0 (unchanged)",
+			state.Attempts,
+		)
+	}
+}
+
+func TestWorkerIntegrationReleaseClaimDoesNotConsumeAttempt(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	eventID := insertWorkerIntegrationEvent(t, db.events)
+	endpointID := insertWorkerIntegrationEndpoint(
+		t, db.endpoints, "http://127.0.0.1:1", "", 3,
+	)
+	deliveryID := insertWorkerIntegrationDelivery(
+		t, db.deliveries, eventID, endpointID, 3,
+	)
+
+	worker := newIntegrationWorker(db, time.Second)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 5*time.Second,
+	)
+	defer cancel()
+
+	claim, err := worker.claim(ctx)
+	if err != nil {
+		t.Fatalf("claim delivery: %v", err)
+	}
+
+	if err := worker.releaseClaim(
+		context.Background(), claim.Delivery,
+	); err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+
+	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
+	if state.Status != StatusPending {
+		t.Errorf("status = %q; want pending", state.Status)
+	}
+	if state.Attempts != 0 {
+		t.Errorf(
+			"attempts = %d; want 0 (release must not consume an attempt)",
+			state.Attempts,
+		)
+	}
+	if state.LeaseUntil != nil {
+		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
+	}
+	if state.NextAttemptAt != nil {
+		t.Errorf(
+			"next_attempt_at = %v; want unset (release is not a failure)",
+			state.NextAttemptAt,
+		)
+	}
+	if state.LastError != "" {
+		t.Errorf("last_error = %q; want empty", state.LastError)
+	}
+}
+
+// ---------------------------------------------------------------
+// End-to-end rate limiting
+// ---------------------------------------------------------------
+
+func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	const (
+		deliveriesTotal = 10
+		rateLimitRPS    = 2
+		concurrency     = 4
+		testDuration    = 3 * time.Second
+	)
+
+	var requestCount atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	endpointID := insertWorkerIntegrationEndpointWithRateLimit(
+		t, db.endpoints, server.URL, "", 3, rateLimitRPS,
+	)
+
+	for i := 0; i < deliveriesTotal; i++ {
+		eventID := insertWorkerIntegrationEvent(t, db.events)
+		insertWorkerIntegrationDelivery(
+			t, db.deliveries, eventID, endpointID, 3,
+		)
+	}
+
+	worker := NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   50 * time.Millisecond,
+			RequestTimeout: 3 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Concurrency:    concurrency,
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), testDuration,
+	)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+
+	<-done
+
+	observed := requestCount.Load()
+
+	// At rate_limit_rps=2 for 3 seconds, a full burst plus the running
+	// refill allows roughly 2 + 3*2 = 8 requests. Allow generous margin
+	// for scheduler jitter.
+	maxExpected := int64(rateLimitRPS * 5)
+	if observed > maxExpected {
+		t.Errorf(
+			"observed %d requests in %s at %d rps; want at most %d",
+			observed,
+			testDuration,
+			rateLimitRPS,
+			maxExpected,
+		)
+	}
+
+	// The limit must have throttled *something*.
+	if observed >= deliveriesTotal {
+		t.Errorf(
+			"all %d deliveries completed within %s at %d rps; "+
+				"rate limit was not enforced",
+			deliveriesTotal,
+			testDuration,
+			rateLimitRPS,
+		)
+	}
+}
+
+func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
+	db := newWorkerIntegrationDB(t)
+
+	const (
+		limitedTotal   = 6
+		unlimitedTotal = 6
+		rateLimitRPS   = 1
+		concurrency    = 4
+		waitFor        = 5 * time.Second
+	)
+
+	var (
+		limitedCount   atomic.Int64
+		unlimitedCount atomic.Int64
+	)
+
+	limitedServer := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		limitedCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer limitedServer.Close()
+
+	unlimitedServer := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		unlimitedCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer unlimitedServer.Close()
+
+	limitedEndpointID := insertWorkerIntegrationEndpointWithRateLimit(
+		t, db.endpoints, limitedServer.URL, "", 3, rateLimitRPS,
+	)
+	unlimitedEndpointID := insertWorkerIntegrationEndpointWithRateLimit(
+		t, db.endpoints, unlimitedServer.URL, "", 3, 0,
+	)
+
+	for i := 0; i < limitedTotal; i++ {
+		eventID := insertWorkerIntegrationEvent(t, db.events)
+		insertWorkerIntegrationDelivery(
+			t, db.deliveries, eventID, limitedEndpointID, 3,
+		)
+	}
+	for i := 0; i < unlimitedTotal; i++ {
+		eventID := insertWorkerIntegrationEvent(t, db.events)
+		insertWorkerIntegrationDelivery(
+			t, db.deliveries, eventID, unlimitedEndpointID, 3,
+		)
+	}
+
+	worker := NewWorker(
+		db.events,
+		db.endpoints,
+		db.deliveries,
+		db.attempts,
+		Config{
+			PollInterval:   50 * time.Millisecond,
+			RequestTimeout: 3 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Concurrency:    concurrency,
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), waitFor,
+	)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx)
+	}()
+
+	// The unlimited endpoint should finish quickly.
+	waitForCondition(
+		t,
+		"unlimited endpoint delivered all events",
+		3*time.Second,
+		func() bool {
+			return unlimitedCount.Load() == unlimitedTotal
+		},
+	)
+
+	// The limited endpoint should still be working, not finished.
+	if limitedCount.Load() >= limitedTotal {
+		t.Errorf(
+			"limited endpoint received %d requests within 3s at %d rps; "+
+				"limit was not enforced",
+			limitedCount.Load(),
+			rateLimitRPS,
+		)
+	}
+
+	// Wait for the worker to drain and shut down.
+	cancel()
+	<-done
 }

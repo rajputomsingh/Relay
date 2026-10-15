@@ -54,6 +54,7 @@ type endpointResponse struct {
 	Enabled          bool                  `json:"enabled"`
 	EventFilter      endpoints.EventFilter `json:"event_filter,omitempty"`
 	MaxAttempts      int                   `json:"max_attempts"`
+	RateLimitRPS     int                   `json:"rate_limit_rps,omitempty"`
 	CreatedAt        time.Time             `json:"created_at"`
 	UpdatedAt        time.Time             `json:"updated_at"`
 	DisabledAt       *time.Time            `json:"disabled_at,omitempty"`
@@ -71,6 +72,7 @@ type createEndpointRequest struct {
 	Enabled       *bool                 `json:"enabled"`
 	EventFilter   endpoints.EventFilter `json:"event_filter"`
 	MaxAttempts   int                   `json:"max_attempts"`
+	RateLimitRPS  int                   `json:"rate_limit_rps"`
 }
 
 type updateEndpointRequest struct {
@@ -80,6 +82,7 @@ type updateEndpointRequest struct {
 	Enabled       *bool                  `json:"enabled"`
 	EventFilter   *endpoints.EventFilter `json:"event_filter"`
 	MaxAttempts   *int                   `json:"max_attempts"`
+	RateLimitRPS  *int                   `json:"rate_limit_rps"`
 }
 
 // ---------------------------------------------
@@ -108,6 +111,7 @@ func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
 		Enabled:       enabled,
 		EventFilter:   req.EventFilter,
 		MaxAttempts:   req.MaxAttempts,
+		RateLimitRPS:  req.RateLimitRPS,
 	}
 
 	if err := ep.Validate(); err != nil {
@@ -200,6 +204,7 @@ func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
 		SigningSecret: req.SigningSecret,
 		EventFilter:   req.EventFilter,
 		MaxAttempts:   req.MaxAttempts,
+		RateLimitRPS:  req.RateLimitRPS,
 		Enabled:       req.Enabled,
 	})
 	if err != nil {
@@ -293,6 +298,7 @@ func toEndpointResponse(ep endpoints.Endpoint) endpointResponse {
 		Enabled:          ep.Enabled,
 		EventFilter:      ep.EventFilter,
 		MaxAttempts:      ep.MaxAttempts,
+		RateLimitRPS:     ep.RateLimitRPS,
 		CreatedAt:        ep.CreatedAt,
 		UpdatedAt:        ep.UpdatedAt,
 		DisabledAt:       ep.DisabledAt,
@@ -310,7 +316,6 @@ func writeEndpointStoreError(w http.ResponseWriter, err error, op string) {
 			"error": "endpoint name already exists",
 		})
 	default:
-		// Do not leak internal errors.
 		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": "endpoint " + op + " temporarily unavailable",
 		})

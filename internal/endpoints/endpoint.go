@@ -51,16 +51,17 @@ func (f EventFilter) Matches(source, eventType string) bool {
 
 // Endpoint is a webhook destination.
 type Endpoint struct {
-	ID            bson.ObjectID `bson:"_id,omitempty"          json:"id"`
-	Name          string        `bson:"name"                   json:"name"`
-	URL           string        `bson:"url"                    json:"url"`
-	SigningSecret string        `bson:"signing_secret,omitempty" json:"-"`
-	Enabled       bool          `bson:"enabled"                json:"enabled"`
-	EventFilter   EventFilter   `bson:"event_filter,omitempty" json:"event_filter,omitempty"`
-	MaxAttempts   int           `bson:"max_attempts"           json:"max_attempts"`
-	CreatedAt     time.Time     `bson:"created_at"             json:"created_at"`
-	UpdatedAt     time.Time     `bson:"updated_at"             json:"updated_at"`
-	DisabledAt    *time.Time    `bson:"disabled_at,omitempty"  json:"disabled_at,omitempty"`
+	ID            bson.ObjectID `bson:"_id,omitempty"             json:"id"`
+	Name          string        `bson:"name"                      json:"name"`
+	URL           string        `bson:"url"                       json:"url"`
+	SigningSecret string        `bson:"signing_secret,omitempty"  json:"-"`
+	Enabled       bool          `bson:"enabled"                   json:"enabled"`
+	EventFilter   EventFilter   `bson:"event_filter,omitempty"    json:"event_filter,omitempty"`
+	MaxAttempts   int           `bson:"max_attempts"              json:"max_attempts"`
+	RateLimitRPS  int           `bson:"rate_limit_rps,omitempty"  json:"rate_limit_rps,omitempty"`
+	CreatedAt     time.Time     `bson:"created_at"                json:"created_at"`
+	UpdatedAt     time.Time     `bson:"updated_at"                json:"updated_at"`
+	DisabledAt    *time.Time    `bson:"disabled_at,omitempty"     json:"disabled_at,omitempty"`
 }
 
 // Validate checks the endpoint's fields before persisting.
@@ -79,6 +80,10 @@ func (e *Endpoint) Validate() error {
 		return errors.New("endpoint URL is required")
 	case e.MaxAttempts < 1 || e.MaxAttempts > 20:
 		return errors.New("max_attempts must be between 1 and 20")
+	case e.RateLimitRPS < 0 || e.RateLimitRPS > 1000:
+		return errors.New(
+			"rate_limit_rps must be 0 (unlimited) or between 1 and 1000",
+		)
 	}
 
 	u, err := url.ParseRequestURI(e.URL)
@@ -107,6 +112,7 @@ type Update struct {
 	SigningSecret *string      `json:"signing_secret,omitempty"`
 	EventFilter   *EventFilter `json:"event_filter,omitempty"`
 	MaxAttempts   *int         `json:"max_attempts,omitempty"`
+	RateLimitRPS  *int         `json:"rate_limit_rps,omitempty"`
 	Enabled       *bool        `json:"enabled,omitempty"`
 }
 
@@ -126,6 +132,9 @@ func (u Update) Apply(e *Endpoint) error {
 	}
 	if u.MaxAttempts != nil {
 		e.MaxAttempts = *u.MaxAttempts
+	}
+	if u.RateLimitRPS != nil {
+		e.RateLimitRPS = *u.RateLimitRPS
 	}
 	if u.Enabled != nil {
 		e.Enabled = *u.Enabled

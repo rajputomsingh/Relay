@@ -1,4 +1,4 @@
-# Observability
+﻿# Observability
 
 Relay exposes three operational surfaces: structured logs, a
 Prometheus-compatible metrics endpoint, and read-only inspection APIs.
