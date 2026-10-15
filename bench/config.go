@@ -47,6 +47,10 @@ type Config struct {
 	// Count is the number of deliveries seeded before the run.
 	Count int
 
+	// MaxAttempts is the delivery retry limit captured on each seeded
+	// delivery. Defaults to 8 to match production config.
+	MaxAttempts int
+
 	// DrainTimeout bounds how long the harness waits for the worker to
 	// drain the backlog. Failure scenarios with retries can take much
 	// longer than successful runs.
@@ -90,6 +94,7 @@ func parseFlags(args []string) (Config, error) {
 		concurrency       int
 		behavior          string
 		count             int
+		maxAttempts       int
 		drainTimeout      time.Duration
 		mongoURI          string
 		database          string
@@ -106,6 +111,8 @@ func parseFlags(args []string) (Config, error) {
 		"downstream behavior: fast, slow, http-500, timeout, transient-503, unavailable")
 	fs.IntVar(&count, "count", 500,
 		"number of deliveries seeded before the run")
+	fs.IntVar(&maxAttempts, "max-attempts", 8,
+		"delivery max attempts (1-20)")
 	fs.DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute,
 		"maximum time to wait for the backlog to drain")
 	fs.StringVar(&mongoURI, "mongo-uri", "",
@@ -131,6 +138,7 @@ func parseFlags(args []string) (Config, error) {
 		Concurrency:       concurrency,
 		Behavior:          Behavior(strings.TrimSpace(behavior)),
 		Count:             count,
+		MaxAttempts:       maxAttempts,
 		DrainTimeout:      drainTimeout,
 		MongoURI:          strings.TrimSpace(mongoURI),
 		Database:          strings.TrimSpace(database),
@@ -158,6 +166,11 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: concurrency must be between 1 and 32", ErrUsage)
 	case c.Count < 1:
 		return fmt.Errorf("%w: count must be positive", ErrUsage)
+	case c.MaxAttempts < 1 || c.MaxAttempts > 20:
+		return fmt.Errorf(
+			"%w: max-attempts must be between 1 and 20",
+			ErrUsage,
+		)
 	case c.DrainTimeout <= 0:
 		return fmt.Errorf("%w: drain-timeout must be positive", ErrUsage)
 	case c.MongoURI == "":

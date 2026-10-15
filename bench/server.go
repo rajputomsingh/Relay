@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +31,14 @@ type mockServer struct {
 	// by mu because multiple worker goroutines may append concurrently.
 	mu        sync.Mutex
 	durations []int64
+}
+
+// mockServerSnapshot is a lock-free snapshot of the server's counters.
+type mockServerSnapshot struct {
+	Requests      int64
+	Successes     int64
+	Failures      int64
+	TransientHits int64
 }
 
 // newMockServer starts a mock webhook server for the given behavior.
@@ -122,11 +129,14 @@ func (s *mockServer) Close() {
 	}
 }
 
-type mockServerSnapshot struct {
-	Requests      int64
-	Successes     int64
-	Failures      int64
-	TransientHits int64
+// snapshot returns the current counters without holding the duration lock.
+func (s *mockServer) snapshot() mockServerSnapshot {
+	return mockServerSnapshot{
+		Requests:      s.requestCount.Load(),
+		Successes:     s.successCount.Load(),
+		Failures:      s.failureCount.Load(),
+		TransientHits: s.transientSeen.Load(),
+	}
 }
 
 // durationSnapshot returns a copy of the recorded handler durations.
@@ -136,19 +146,6 @@ func (s *mockServer) durationSnapshot() []int64 {
 	out := make([]int64, len(s.durations))
 	copy(out, s.durations)
 	return out
-}
-
-// waitForShutdown is a helper for the harness to wait for the server to
-// stop accepting connections after Close is called.
-func (s *mockServer) waitForShutdown(ctx context.Context) {
-	if s.Server == nil {
-		return
-	}
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(50 * time.Millisecond):
-	}
 }
 
 // logServerStart prints a one-line startup message with the behavior and URL.
