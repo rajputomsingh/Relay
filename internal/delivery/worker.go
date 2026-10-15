@@ -388,8 +388,8 @@ func (w *Worker) processOne(ctx context.Context) error {
 				"error_type", fmt.Sprintf("%T", saveErr),
 			)
 		}
-
 		attrs := []any{
+			"delivery_id", delivery.ID.Hex(),
 			"event_id", event.ID.Hex(),
 			"endpoint_id", endpoint.ID.Hex(),
 			"attempt", attempt.AttemptNumber,
