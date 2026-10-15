@@ -4,23 +4,35 @@ Measured throughput and latency of Relay's delivery pipeline, produced by the be
 
 ## Environment
 
-- **Go:** 1.22+
-- **Operating system:** Windows
-- **MongoDB:** 7, running in Docker at `localhost:27017`
-- **Poll interval:** 200ms
-- **Request timeout:** 10s
-- **Lease duration:** 30s
-- **Deliveries per baseline run:** 100
-- **Warm-up deliveries:** 0
+\- \***\*Go:\*\*** 1.22+
+
+\- \***\*Operating system:\*\*** Windows
+
+\- \***\*MongoDB:\*\*** 7, running in Docker at `localhost:27017`
+
+\- \***\*Poll interval:\*\*** 200ms
+
+\- \***\*Request timeout:\*\*** 10s
+
+\- \***\*Lease duration:\*\*** 30s
+
+\- \***\*Deliveries per baseline run:\*\*** 100
+
+\- \***\*Warm-up deliveries:\*\*** 0
 
 ## Results
 
 | Concurrency | Behavior | Drain (s) | Throughput (deliveries/s) | Delivered | Failed | HTTP p50 | HTTP p95 | HTTP p99 |
+
 | ----------: | -------- | --------: | ------------------------: | --------: | -----: | -------: | -------: | -------: |
-|           1 | `fast`   |      20.0 |                       5.0 |       100 |      0 |      0ms |      0ms |      0ms |
-|           1 | `slow`   |      20.0 |                       5.0 |       100 |      0 |    100ms |    102ms |    105ms |
-|           4 | `fast`   |       5.0 |                      20.0 |       100 |      0 |      0ms |      0ms |      0ms |
-|           4 | `slow`   |       5.0 |                      20.0 |       100 |      0 |    100ms |    101ms |    102ms |
+
+|           1 | `fast`   |      20.0 |                       5.0 |       100 |      0 |      0ms |      0ms |      0ms |
+
+|           1 | `slow`   |      20.0 |                       5.0 |       100 |      0 |    100ms |    102ms |    105ms |
+
+|           4 | `fast`   |       5.0 |                      20.0 |       100 |      0 |      0ms |      0ms |      0ms |
+
+|           4 | `slow`   |       5.0 |                      20.0 |       100 |      0 |    100ms |    101ms |    102ms |
 
 ## Interpretation
 
@@ -29,13 +41,16 @@ Measured throughput and latency of Relay's delivery pipeline, produced by the be
 The measured throughput follows the relationship:
 
 \[
+
 \text{Throughput} \approx \frac{\text{Concurrency}}{\text{Poll interval}}
+
 \]
 
 For a 200ms polling interval:
 
-- **1 worker:** \(1 / 0.2 = 5\) deliveries per second.
-- **4 workers:** \(4 / 0.2 = 20\) deliveries per second.
+\- \***\*1 worker:\*\*** \(1 / 0.2 = 5\) deliveries per second.
+
+\- \***\*4 workers:\*\*** \(4 / 0.2 = 20\) deliveries per second.
 
 Under this model, the worker claims a delivery, processes it, and waits for the next polling tick before continuing. When the downstream responds quickly, the polling interval can dominate the time between deliveries.
 
@@ -51,9 +66,11 @@ This suggests that downstream latency is not the only factor governing throughpu
 
 ### Recommended operating settings
 
-- **Fast downstreams:** If polling limits throughput, evaluate a shorter polling interval. Measure the resulting throughput alongside MongoDB load and empty-poll frequency.
-- **Slow downstreams:** Increase concurrency experimentally to determine whether additional workers improve throughput. Watch for MongoDB contention, timeouts, retries, and tail-latency increases.
-- **Production configuration:** The supplied draft identifies concurrency of 4 and a polling interval of 2 seconds as the default configuration. Under a simplified model where each of four workers can claim one delivery per polling interval, the estimated ceiling is \(4 / 2 = 2\) deliveries per second per instance. Confirm the actual configuration and worker scheduling behavior before using this estimate for capacity planning.
+\- \***\*Fast downstreams:\*\*** If polling limits throughput, evaluate a shorter polling interval. Measure the resulting throughput alongside MongoDB load and empty-poll frequency.
+
+\- \***\*Slow downstreams:\*\*** Increase concurrency experimentally to determine whether additional workers improve throughput. Watch for MongoDB contention, timeouts, retries, and tail-latency increases.
+
+\- \***\*Production configuration:\*\*** The supplied draft identifies concurrency of 4 and a polling interval of 2 seconds as the default configuration. Under a simplified model where each of four workers can claim one delivery per polling interval, the estimated ceiling is \(4 / 2 = 2\) deliveries per second per instance. Confirm the actual configuration and worker scheduling behavior before using this estimate for capacity planning.
 
 ## Phase 1 — Failure-path validation
 
@@ -61,25 +78,33 @@ The same benchmark harness, delivery worker, and MongoDB schema were used to tes
 
 ### Results
 
-| Behavior        | Count | Max Attempts | Drain (s) | Delivered | Failed | Attempts | HTTP p50 | Attempt p50 |
+| Behavior        | Count | Max Attempts | Drain (s) | Delivered | Failed | Attempts | HTTP p50 | Attempt p50 |
+
 | --------------- | ----: | -----------: | --------: | --------: | -----: | -------: | -------: | ----------: |
-| `http-500`      |   100 |            3 |      15.0 |         0 |    100 |      300 |      0ms |         1ms |
-| `timeout`       |    20 |            2 |     101.0 |         0 |     20 |       40 |  30000ms |     10001ms |
-| `transient-503` |    50 |            5 |       4.0 |        50 |      0 |       60 |      0ms |         0ms |
-| `unavailable`   |    50 |            3 |      11.0 |         0 |     50 |      150 |        — |         1ms |
+
+| `http-500`      |   100 |            3 |      15.0 |         0 |    100 |      300 |      0ms |         1ms |
+
+| `timeout`       |    20 |            2 |     101.0 |         0 |     20 |       40 |  30000ms |     10001ms |
+
+| `transient-503` |    50 |            5 |       4.0 |        50 |      0 |       60 |      0ms |         0ms |
+
+| `unavailable`   |    50 |            3 |      11.0 |         0 |     50 |      150 |        — |         1ms |
 
 ### Acceptance criteria
 
 Every scenario reached a terminal state (`pending = 0`). Retry limits were respected:
 
-- `http-500`: `attempts = 300 = 100 × 3`
-- `timeout`: `attempts = 40 = 20 × 2`
-- `unavailable`: `attempts = 150 = 50 × 3`
-- `transient-503`: `attempts = 60`, with all 50 deliveries eventually succeeding within the five-attempt limit.
+\- `http-500`: `attempts = 300 = 100 × 3`
+
+\- `timeout`: `attempts = 40 = 20 × 2`
+
+\- `unavailable`: `attempts = 150 = 50 × 3`
+
+\- `transient-503`: `attempts = 60`, with all 50 deliveries eventually succeeding within the five-attempt limit.
 
 ### Findings
 
-**Timeouts dominate drain time.**
+\***\*Timeouts dominate drain time.\*\***
 
 Twenty deliveries with two attempts and a 10-second request timeout took 101 seconds to drain. The simplified estimate
 
@@ -89,11 +114,11 @@ predicts approximately 100 seconds for this run.
 
 At a hypothetical workload of 1,000 deliveries, eight attempts, a 10-second request timeout, and concurrency 4, the same simplified model predicts:
 
-`1000 × 10 × 8 / 4 = 20,000 seconds`, or approximately **5.6 hours**.
+`1000 × 10 × 8 / 4 = 20,000 seconds`, or approximately \***\*5.6 hours\*\***.
 
 This is an illustrative worst-case estimate, not a measured production result. Actual drain time depends on retry backoff, polling and scheduling behavior, request cancellation, and how the worker handles exhausted attempts. Success-path benchmarks alone do not reveal this failure-recovery cost.
 
-**`transient-503` recovered cleanly.**
+\***\*`transient-503` recovered cleanly.\*\***
 
 The mock fails the first 10 requests, then returns HTTP 204. All 50 deliveries eventually succeeded, with 60 total attempts.
 
@@ -101,20 +126,100 @@ The observed retry behavior was sufficient to recover from the configured reques
 
 The mock's transient behavior is request-count-based, not time-based. The harness does not yet test a destination remaining unhealthy for a specified duration. A time-based failure mode is a future refinement.
 
-**`unavailable` records attempts without HTTP requests.**
+\***\*`unavailable` records attempts without HTTP requests.\*\***
 
 Connection refusals produce `http.requests = 0` but `attempts.count = 150`. Failure accounting does not depend on receiving an HTTP response. A refused connection is still a failed attempt and consumes a retry.
 
-**`server.transient_hits` counts requests, not just failures.**
+\***\*`server.transient_hits` counts requests, not just failures.\*\***
 
 In the `transient-503` run, `transient_hits = 60`, representing 10 failed requests and 50 successful requests. The counter records requests seen by the behavior, not the number of failed responses.
 
 ### Limitations
 
-- All failure-path runs used concurrency 4. Failure-mode scaling across concurrency levels has not been measured.
-- Per-attempt-number breakdowns are not recorded. The distribution of which attempt number succeeded is not visible in the current report.
-- The `transient-503` failure trigger is request-count-based, not time-based.
-- The `timeout` mock does not abort its handler on client disconnect. The mock handler runs for up to 30 seconds, while the delivery attempt records approximately 10 seconds due to the client timeout. A future improvement should make the mock respect `r.Context().Done()`.
+\- All failure-path runs used concurrency 4. Failure-mode scaling across concurrency levels has not been measured.
+
+\- Per-attempt-number breakdowns are not recorded. The distribution of which attempt number succeeded is not visible in the current report.
+
+\- The `transient-503` failure trigger is request-count-based, not time-based.
+
+\- The `timeout` mock does not abort its handler on client disconnect. The mock handler runs for up to 30 seconds, while the delivery attempt records approximately 10 seconds due to the client timeout. A future improvement should make the mock respect `r.Context().Done()`.
+
+## Phase 2 — Failure-mode concurrency sweep
+
+Extends the failure-path validation to test throughput scaling across concurrency levels. All runs use count 200, `max_attempts 3`, poll interval 200ms, request timeout 10s, lease duration 30s.
+
+### `unavailable`
+
+| Concurrency | Drain (s) | Attempts/s | Expected (5 × conc) | Failed |
+
+| ----------: | --------: | ---------: | ------------------: | -----: |
+
+|           1 |    120.00 |       5.00 |                   5 |    200 |
+
+|           2 |     60.00 |      10.00 |                  10 |    200 |
+
+|           4 |     30.00 |      20.00 |                  20 |    200 |
+
+|           8 |     15.01 |      39.99 |                  40 |    200 |
+
+|          16 |     10.01 |      59.96 |                  80 |    200 |
+
+|          32 |      9.01 |      66.59 |                 160 |    200 |
+
+**Finding: two ceilings.** A useful finite-workload approximation is to compare the poll-limited rate (`concurrency × 5 attempts/s`) with the workload's backoff-limited rate (`total attempts / backoff floor`). For `max_attempts = 3` and an approximately 5-second gap between retries, the two retry gaps imply an approximately 10-second backoff floor. This is a heuristic, not a universal steady-state throughput formula.
+
+- At count 200, the backoff-based estimate is `3 × 200 / 10 = 60 attempts/s`. The observed plateau is approximately 67 attempts/s, close to that estimate.
+- At count 1000 in the `http-500` sweep below, the corresponding estimate is `3 × 1000 / 10 = 300 attempts/s`. The poll ceiling at concurrency 32 is `32 × 5 = 160 attempts/s`, so the observed rate can remain poll-limited across the tested range.
+
+The effective observed rate depends on both concurrency and workload size; do not generalize the count-200 plateau to every failure workload.
+
+\***\*Implication for production.\*\*** Concurrency above 8 does not increase delivery throughput when retries are in play. The workers sit idle waiting for `next_attempt_at`. If a deployment needs higher failure throughput, reducing the backoff interval is more effective than adding workers.
+
+\***\*Note on `Attempted (req/s)`.\*\*** For `unavailable`, no HTTP request is made, so this column is always 0. `Attempts/s` is the metric that scales.
+
+### `http-500`
+
+Count 1000, `max_attempts = 3`.
+
+| Concurrency | Drain (s) | Attempts/s | Expected (5 × conc) | Failed |
+| ----------: | --------: | ---------: | ------------------: | -----: |
+|           1 |    600.01 |       5.00 |                   5 |   1000 |
+|           2 |    300.01 |      10.00 |                  10 |   1000 |
+|           4 |    150.01 |      20.00 |                  20 |   1000 |
+|           8 |     75.01 |      40.00 |                  40 |   1000 |
+|          16 |     38.01 |      78.93 |                  80 |   1000 |
+|          32 |     19.01 |     157.77 |                 160 |   1000 |
+
+**Finding: poll-limited across the tested range.** Throughput scales approximately linearly with concurrency through 32, tracking `concurrency × 5 attempts/s`. The backoff-based estimate for this workload is `3 × 1000 / 10 = 300 attempts/s`, above the poll ceiling of `160 attempts/s` at concurrency 32. The measurements therefore show no backoff-driven plateau within these tested concurrency levels.
+
+### Comparison
+
+The `unavailable` count-200 run and the `http-500` count-1000 run illustrate that workload size affects which constraint is visible. The `unavailable` run approaches a finite-workload backoff floor, while the larger `http-500` run remains close to the poll-limited rate through concurrency 32. Treat `min(concurrency × 5, total attempts / backoff floor)` as a rough comparison of ceilings, not an exact performance law: scheduling, retry timing, polling, and drain-time measurement can affect observed results.
+
+### `transient-503`
+
+Count 200, `transient_failures 20`, `max_attempts 5`.
+
+| Concurrency | Drain (s) | Attempts/s | Attempts | Delivered | Failed |
+| ----------: | --------: | ---------: | -------: | --------: | -----: |
+|           1 |     44.00 |       5.00 |      220 |       200 |      0 |
+|           2 |     22.00 |      10.00 |      220 |       200 |      0 |
+|           4 |     11.00 |      19.99 |      220 |       200 |      0 |
+|           8 |      6.00 |      36.64 |      220 |       200 |      0 |
+|          16 |      3.01 |      73.10 |      220 |       200 |      0 |
+|          32 |      3.02 |      72.96 |      220 |       200 |      0 |
+
+**Finding: recovery floor at ~3s, not backoff-bound.** All 200
+deliveries succeeded at every concurrency level. The total attempt count
+is 220 at every level: 200 first attempts + 20 retries for the deliveries
+that hit the initial failing window.
+
+Throughput scales linearly to concurrency 8, then plateaus around
+73 attempts/s. The plateau is not the retry backoff window — the retried
+deliveries succeed on their second attempt, ~2.5s after the first pass.
+The floor is the recovery window itself: 200 deliveries / (16 × 5/s)
+= 2.5s for the first pass, plus one poll tick for the retry, giving a
+minimum drain of roughly 3s at any concurrency ≥ 16.
 
 ## Reproducing the Results
 
@@ -159,7 +264,22 @@ go run ./bench --behavior transient-503 --count 50 --transient-failures 10 --max
 go run ./bench --behavior unavailable --count 50 --max-attempts 3 --drain-timeout 10m
 ```
 
-Run each command separately and confirm that the harness supports the supplied flags and scenario names in your current checkout.
+### Failure-mode concurrency sweep
+
+Run the sweep for each failure behavior at count 200:
+
+```powershell
+go run ./bench --matrix --behavior unavailable --count 200 --max-attempts 3 --concurrency-levels 1,2,4,8,16,32 --drain-timeout 10m --quiet
+Copy-Item bench/results/summary.md bench/results/summary-unavailable-sweep.md
+
+go run ./bench --matrix --behavior http-500 --count 200 --max-attempts 3 --concurrency-levels 1,2,4,8,16,32 --drain-timeout 10m --quiet
+Copy-Item bench/results/summary.md bench/results/summary-http-500-sweep.md
+
+go run ./bench --matrix --behavior transient-503 --count 200 --transient-failures 20 --max-attempts 5 --concurrency-levels 1,2,4,8,16,32 --drain-timeout 10m --quiet
+Copy-Item bench/results/summary.md bench/results/summary-transient-503-sweep.md
+```
+
+Each sweep writes a consolidated report to `bench/results/summary.md`. Copy the output to a per-behavior file before running the next sweep, because each run overwrites `summary.md`.
 
 Single-behavior runs write per-run JSON to `bench/results/` but do not produce the consolidated `summary.md`. Only `--matrix` writes the matrix summary. The JSON from each failure-path run is the source for the Phase 1 table.
 
@@ -189,3 +309,28 @@ Before using them for production capacity planning, verify:
 - Whether HTTP latency percentiles are calculated from the measured request samples.
 - Whether the worker polling model matches the interpretation above.
 - Whether the benchmark environment and database settings match the intended deployment.
+
+## Verify
+
+After saving, check that the Phase 2 results section appears exactly once and the code fences are balanced:
+
+````powershell
+Select-String -Path docs/benchmarks.md -Pattern "^## Phase 2" | Select-Object LineNumber, Line
+Select-String -Path docs/benchmarks.md -Pattern '^```' | Measure-Object | Select-Object Count
+````
+
+Expected:
+
+- One match for `## Phase 2` (the existing Phase 2 results section).
+- An even number of code fences; `Measure-Object Count` should be even.
+
+If the fence count is odd, there is still an unclosed code block somewhere. In particular, ensure the `docker run` command has a closing triple-backtick line before `Configure the connection string`.
+
+## Commit
+
+After reviewing the diff:
+
+```powershell
+git add docs/benchmarks.md
+git commit -m "docs(bench): fix benchmark reproduction section"
+```

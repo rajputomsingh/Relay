@@ -54,11 +54,15 @@ func newMockServer(
 	}
 
 	if behavior == BehaviorUnavailable {
-		// Bind a server, then close it immediately so subsequent
-		// connections are refused. The URL remains usable for the
-		// benchmark config.
-		ms.Server = httptest.NewServer(http.NotFoundHandler())
-		ms.Server.Close()
+		// Do not bind a listener. Port 1 is reserved on Windows and
+		// privileged on Unix, so connections to it are refused
+		// immediately without TIME_WAIT delays.
+		//
+		// Binding a real listener and immediately closing it leaves
+		// the port in TIME_WAIT on Windows, which causes connect
+		// attempts to hang waiting for the TCP handshake instead of
+		// failing fast. URL() returns the port-1 fallback when
+		// Server is nil.
 		return ms
 	}
 
@@ -92,9 +96,18 @@ func (s *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.failureCount.Add(1)
 
 	case BehaviorTimeout:
-		// Sleep longer than any reasonable request timeout.
-		time.Sleep(30 * time.Second)
-		w.WriteHeader(http.StatusNoContent)
+		// Sleep longer than any reasonable request timeout, but stop
+		// early if the client disconnects. Without the context check
+		// the handler occupies a goroutine for the full 30 seconds
+		// even after the client has given up, which skews shutdown
+		// timing and wastes resources at high concurrency.
+		select {
+		case <-time.After(30 * time.Second):
+			w.WriteHeader(http.StatusNoContent)
+		case <-r.Context().Done():
+			// Client canceled. Nothing to write; the connection is
+			// already gone.
+		}
 
 	case BehaviorTransient:
 		seen := s.transientSeen.Add(1)
@@ -107,8 +120,8 @@ func (s *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.successCount.Add(1)
 
 	case BehaviorUnavailable:
-		// Never reached — the server is already closed. This branch
-		// exists to keep the switch exhaustive.
+		// Never reached — no listener is bound for this behavior.
+		// This branch exists to keep the switch exhaustive.
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}
 }

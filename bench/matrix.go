@@ -192,18 +192,25 @@ func writeMatrixSummary(
 		"| Concurrency | Behavior | Drain (s) | Throughput (deliv/s) | ",
 	)
 	sb.WriteString(
-		"Attempted (req/s) | Delivered | Failed | Failure Rate | ",
+		"Attempts/s | Attempted (req/s) | Delivered | Failed | Failure Rate | ",
 	)
 	sb.WriteString("HTTP p50 (ms) | HTTP p95 (ms) | HTTP p99 (ms) |\n")
-	sb.WriteString("|---|---|---|---|---|---|---|---|---|---|---|\n")
+	sb.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 
 	for _, r := range results {
+		attemptsPerSecond := 0.0
+		if r.Result.Timing.DrainSeconds > 0 {
+			attemptsPerSecond = float64(r.Result.Attempts.Count) /
+				r.Result.Timing.DrainSeconds
+		}
+
 		sb.WriteString(fmt.Sprintf(
-			"| %d | %s | %.2f | %.2f | %.2f | %d | %d | %.3f | %.0f | %.0f | %.0f |\n",
+			"| %d | %s | %.2f | %.2f | %.2f | %.2f | %d | %d | %.3f | %.0f | %.0f | %.0f |\n",
 			r.Config.Concurrency,
 			r.Config.Behavior,
 			r.Result.Timing.DrainSeconds,
 			r.Result.Throughput.SuccessfulPerSecond,
+			attemptsPerSecond,
 			r.Result.Throughput.AttemptedPerSecond,
 			r.Result.Throughput.SuccessfulTotal,
 			r.Result.Throughput.FailedTotal,
