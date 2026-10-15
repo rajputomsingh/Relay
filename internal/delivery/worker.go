@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
@@ -29,10 +30,16 @@ type Config struct {
 	PollInterval   time.Duration
 	RequestTimeout time.Duration
 	LeaseDuration  time.Duration
+	Concurrency    int
 	Logger         *slog.Logger
 }
 
 // Worker processes deliveries for every enabled endpoint.
+//
+// Each Run call spawns Config.Concurrency independent goroutines. They
+// share no state beyond the MongoDB collections; coordination happens
+// entirely through the atomic claim operation on the deliveries
+// collection.
 type Worker struct {
 	events     *mongo.Collection
 	endpoints  *mongo.Collection
@@ -42,10 +49,12 @@ type Worker struct {
 	logger     *slog.Logger
 	client     *http.Client
 
-	// Health signals. Written by the Run loop, read by the metrics handler.
+	// Health signals. Written by the worker loop, read by the metrics
+	// handler.
 	healthMu              sync.RWMutex
 	lastProcessedAt       time.Time
 	processingErrorsTotal int64
+	inFlight              atomic.Int64
 }
 
 // claimResult carries the delivery plus its loaded event and endpoint.
@@ -118,12 +127,18 @@ func (w *Worker) validateConfig() error {
 		return errors.New(
 			"lease duration must be greater than request timeout",
 		)
+	case w.config.Concurrency < 1 || w.config.Concurrency > 32:
+		return errors.New("concurrency must be between 1 and 32")
 	}
 
 	return nil
 }
 
-// Run polls for due deliveries until the context is cancelled.
+// Run starts the bounded worker pool and blocks until ctx is cancelled.
+//
+// Each goroutine runs an independent workerLoop that polls for due
+// deliveries. Because claim is atomic, the goroutines naturally
+// distribute work without coordinating.
 func (w *Worker) Run(ctx context.Context) {
 	if err := w.validateConfig(); err != nil {
 		w.logger.Error(
@@ -133,14 +148,33 @@ func (w *Worker) Run(ctx context.Context) {
 		return
 	}
 
+	w.logger.Info(
+		"delivery worker started",
+		"concurrency", w.config.Concurrency,
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < w.config.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.workerLoop(ctx)
+		}()
+	}
+
+	wg.Wait()
+
+	w.logger.Info("delivery worker stopped")
+}
+
+// workerLoop is one bounded worker. It polls for due deliveries until
+// ctx is cancelled.
+func (w *Worker) workerLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.config.PollInterval)
 	defer ticker.Stop()
 
-	w.logger.Info("delivery worker started")
-
 	for {
 		if ctx.Err() != nil {
-			w.logger.Info("delivery worker stopped")
 			return
 		}
 
@@ -166,7 +200,6 @@ func (w *Worker) Run(ctx context.Context) {
 
 		select {
 		case <-ctx.Done():
-			w.logger.Info("delivery worker stopped")
 			return
 		case <-ticker.C:
 		}
@@ -174,7 +207,7 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // LastProcessedAt returns the timestamp of the most recent successful
-// processing cycle. Zero if the worker has not yet completed a cycle.
+// processing cycle. Zero if no cycle has completed.
 func (w *Worker) LastProcessedAt() time.Time {
 	w.healthMu.RLock()
 	defer w.healthMu.RUnlock()
@@ -187,6 +220,12 @@ func (w *Worker) ProcessingErrorsTotal() int64 {
 	w.healthMu.RLock()
 	defer w.healthMu.RUnlock()
 	return w.processingErrorsTotal
+}
+
+// InFlightDeliveries returns the number of deliveries currently being
+// processed. Bounded above by Config.Concurrency.
+func (w *Worker) InFlightDeliveries() int {
+	return int(w.inFlight.Load())
 }
 
 // claim atomically assigns one due delivery to this worker.
@@ -351,6 +390,9 @@ func (w *Worker) processOne(ctx context.Context) error {
 	event := claim.Event
 	endpoint := claim.Endpoint
 
+	w.inFlight.Add(1)
+	defer w.inFlight.Add(-1)
+
 	startedAt := time.Now().UTC()
 	httpStatus := 0
 	var attemptErr error
@@ -383,11 +425,13 @@ func (w *Worker) processOne(ctx context.Context) error {
 		if saveErr != nil {
 			w.logger.Error(
 				"delivery attempt history write failed",
+				"delivery_id", delivery.ID.Hex(),
 				"event_id", event.ID.Hex(),
 				"endpoint_id", endpoint.ID.Hex(),
 				"error_type", fmt.Sprintf("%T", saveErr),
 			)
 		}
+
 		attrs := []any{
 			"delivery_id", delivery.ID.Hex(),
 			"event_id", event.ID.Hex(),

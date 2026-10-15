@@ -101,6 +101,7 @@ func serveMetricsIntegrationRequest(
 type fakeWorkerHealth struct {
 	lastProcessedAt time.Time
 	errorsTotal     int64
+	inFlight        int
 }
 
 func (f *fakeWorkerHealth) LastProcessedAt() time.Time {
@@ -109,6 +110,10 @@ func (f *fakeWorkerHealth) LastProcessedAt() time.Time {
 
 func (f *fakeWorkerHealth) ProcessingErrorsTotal() int64 {
 	return f.errorsTotal
+}
+
+func (f *fakeWorkerHealth) InFlightDeliveries() int {
+	return f.inFlight
 }
 
 func TestMetricsIntegrationEmptyCollections(t *testing.T) {
@@ -359,6 +364,7 @@ func TestMetricsIntegrationWorkerHealth(t *testing.T) {
 	health := &fakeWorkerHealth{
 		lastProcessedAt: time.Now().UTC(),
 		errorsTotal:     3,
+		inFlight:        2,
 	}
 	handler.WithWorkerHealth(health)
 
@@ -377,6 +383,7 @@ func TestMetricsIntegrationWorkerHealth(t *testing.T) {
 	expected := []string{
 		"relay_worker_last_processed_timestamp_seconds",
 		"relay_worker_processing_errors_total 3",
+		"relay_worker_in_flight_deliveries 2",
 	}
 
 	for _, metric := range expected {
@@ -396,11 +403,13 @@ func TestMetricsIntegrationWorkerHealthAbsentWithoutWorker(t *testing.T) {
 
 	body := recorder.Body.String()
 
-	// Without a worker attached, worker health metrics must not appear.
 	if strings.Contains(body, "relay_worker_last_processed_timestamp_seconds") {
 		t.Error("worker timestamp metric appeared without a worker")
 	}
 	if strings.Contains(body, "relay_worker_processing_errors_total") {
 		t.Error("worker errors metric appeared without a worker")
+	}
+	if strings.Contains(body, "relay_worker_in_flight_deliveries") {
+		t.Error("worker in-flight metric appeared without a worker")
 	}
 }

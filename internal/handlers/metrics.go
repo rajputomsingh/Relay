@@ -65,6 +65,7 @@ type metricsStore interface {
 type workerHealth interface {
 	LastProcessedAt() time.Time
 	ProcessingErrorsTotal() int64
+	InFlightDeliveries() int
 }
 
 type mongoMetricsStore struct {
@@ -610,5 +611,19 @@ func writeWorkerMetrics(w http.ResponseWriter, health workerHealth) {
 		w,
 		"relay_worker_processing_errors_total %d\n",
 		health.ProcessingErrorsTotal(),
+	)
+
+	_, _ = fmt.Fprintln(
+		w,
+		"# HELP relay_worker_in_flight_deliveries Number of deliveries currently being processed.",
+	)
+	_, _ = fmt.Fprintln(
+		w,
+		"# TYPE relay_worker_in_flight_deliveries gauge",
+	)
+	_, _ = fmt.Fprintf(
+		w,
+		"relay_worker_in_flight_deliveries %d\n",
+		health.InFlightDeliveries(),
 	)
 }

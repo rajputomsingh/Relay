@@ -1,4 +1,4 @@
-﻿package config
+package config
 
 import (
 	"errors"
@@ -18,6 +18,7 @@ type Config struct {
 	RelayAPIKey          string
 	WebhookURL           string
 	WorkerPollSeconds    int
+	WorkerConcurrency    int
 	MaxDeliveryAttempts  int
 	WebhookSigningSecret string
 }
@@ -82,6 +83,15 @@ func Load() (Config, error) {
 	if err != nil || cfg.WorkerPollSeconds < 1 || cfg.WorkerPollSeconds > 60 {
 		return Config{}, errors.New(
 			"RELAY_WORKER_POLL_SECONDS must be between 1 and 60",
+		)
+	}
+
+	cfg.WorkerConcurrency, err = strconv.Atoi(
+		getEnv("RELAY_WORKER_CONCURRENCY", "4"),
+	)
+	if err != nil || cfg.WorkerConcurrency < 1 || cfg.WorkerConcurrency > 32 {
+		return Config{}, errors.New(
+			"RELAY_WORKER_CONCURRENCY must be between 1 and 32",
 		)
 	}
 
