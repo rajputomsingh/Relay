@@ -13,6 +13,7 @@ func setValidEnvironment(t *testing.T) {
 		"RELAY_API_KEY":                "0123456789abcdef0123456789abcdef",
 		"RELAY_WEBHOOK_URL":            "",
 		"RELAY_WORKER_POLL_SECONDS":    "2",
+		"RELAY_WORKER_CONCURRENCY":     "4",
 		"RELAY_MAX_DELIVERY_ATTEMPTS":  "8",
 		"RELAY_WEBHOOK_SIGNING_SECRET": "",
 	}
@@ -42,6 +43,9 @@ func TestLoadValidConfiguration(t *testing.T) {
 	if cfg.WorkerPollSeconds != 2 {
 		t.Errorf("WorkerPollSeconds = %d, want 2", cfg.WorkerPollSeconds)
 	}
+	if cfg.WorkerConcurrency != 4 {
+		t.Errorf("WorkerConcurrency = %d, want 4", cfg.WorkerConcurrency)
+	}
 	if cfg.MaxDeliveryAttempts != 8 {
 		t.Errorf("MaxDeliveryAttempts = %d, want 8", cfg.MaxDeliveryAttempts)
 	}
@@ -57,6 +61,53 @@ func TestLoadDefaultsEmptyDatabaseName(t *testing.T) {
 	}
 	if cfg.MongoDatabase != "relay" {
 		t.Errorf("MongoDatabase = %q, want relay", cfg.MongoDatabase)
+	}
+}
+
+func TestLoadDefaultsWorkerConcurrency(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_WORKER_CONCURRENCY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.WorkerConcurrency != 4 {
+		t.Errorf(
+			"WorkerConcurrency = %d, want default 4",
+			cfg.WorkerConcurrency,
+		)
+	}
+}
+
+func TestLoadWorkerConcurrencyBoundaries(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "minimum accepted", value: "1", want: 1},
+		{name: "maximum accepted", value: "32", want: 32},
+		{name: "typical value", value: "8", want: 8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			t.Setenv("RELAY_WORKER_CONCURRENCY", tt.value)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+			if cfg.WorkerConcurrency != tt.want {
+				t.Errorf(
+					"WorkerConcurrency = %d, want %d",
+					cfg.WorkerConcurrency,
+					tt.want,
+				)
+			}
+		})
 	}
 }
 
@@ -142,6 +193,30 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 			name: "invalid poll interval text",
 			change: func() {
 				t.Setenv("RELAY_WORKER_POLL_SECONDS", "invalid")
+			},
+		},
+		{
+			name: "concurrency below minimum",
+			change: func() {
+				t.Setenv("RELAY_WORKER_CONCURRENCY", "0")
+			},
+		},
+		{
+			name: "concurrency above maximum",
+			change: func() {
+				t.Setenv("RELAY_WORKER_CONCURRENCY", "33")
+			},
+		},
+		{
+			name: "invalid concurrency text",
+			change: func() {
+				t.Setenv("RELAY_WORKER_CONCURRENCY", "invalid")
+			},
+		},
+		{
+			name: "negative concurrency",
+			change: func() {
+				t.Setenv("RELAY_WORKER_CONCURRENCY", "-1")
 			},
 		},
 		{
