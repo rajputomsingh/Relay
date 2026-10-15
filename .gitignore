@@ -8,3 +8,7 @@ coverage.out
 .idea/
 # Local configuration. Never commit.
 .env
+
+# Benchmark harness output. JSON per-run files are exploratory;
+# only the summary report and the harness itself are version-controlled.
+bench/results/*.json
