@@ -6,15 +6,21 @@ import (
 	"net/http"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 )
 
-type HealthHandler struct {
-	client *mongo.Client
+// pinger is the subset of the MongoDB client used by readiness checks.
+// Declared as an interface so tests can inject a fake without needing a
+// live MongoDB instance.
+type pinger interface {
+	Ping(ctx context.Context, rp *readpref.ReadPref) error
 }
 
-func NewHealthHandler(client *mongo.Client) *HealthHandler {
+type HealthHandler struct {
+	client pinger
+}
+
+func NewHealthHandler(client pinger) *HealthHandler {
 	return &HealthHandler{client: client}
 }
 
