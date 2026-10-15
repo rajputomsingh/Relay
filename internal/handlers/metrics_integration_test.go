@@ -69,6 +69,7 @@ func newMongoMetricsIntegration(
 	handler := NewMetricsHandler(
 		db.Collection("events"),
 		db.Collection("delivery_attempts"),
+		db.Collection("deliveries"),
 		"metrics-integration-test-key",
 	)
 
@@ -96,6 +97,20 @@ func serveMetricsIntegrationRequest(
 	return recorder
 }
 
+// fakeWorkerHealth satisfies workerHealth for integration tests.
+type fakeWorkerHealth struct {
+	lastProcessedAt time.Time
+	errorsTotal     int64
+}
+
+func (f *fakeWorkerHealth) LastProcessedAt() time.Time {
+	return f.lastProcessedAt
+}
+
+func (f *fakeWorkerHealth) ProcessingErrorsTotal() int64 {
+	return f.errorsTotal
+}
+
 func TestMetricsIntegrationEmptyCollections(t *testing.T) {
 	_, handler := newMongoMetricsIntegration(t)
 
@@ -118,6 +133,11 @@ func TestMetricsIntegrationEmptyCollections(t *testing.T) {
 		`relay_events{status="delivered"} 0`,
 		`relay_events{status="failed"} 0`,
 		`relay_events{status="disabled"} 0`,
+		`relay_deliveries{status="pending"} 0`,
+		`relay_deliveries{status="processing"} 0`,
+		`relay_deliveries{status="delivered"} 0`,
+		`relay_deliveries{status="failed"} 0`,
+		"relay_deliveries_terminal_failures 0",
 		"relay_delivery_attempts 0",
 		"relay_delivery_retries 0",
 		`relay_delivery_duration_seconds_bucket{le="100"} 0`,
@@ -228,5 +248,159 @@ func TestMetricsIntegrationAggregatesEventsAttemptsAndDurations(
 		if !strings.Contains(body, metric) {
 			t.Errorf("metrics output missing %q", metric)
 		}
+	}
+}
+
+func TestMetricsIntegrationDeliveryCounts(t *testing.T) {
+	db, handler := newMongoMetricsIntegration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	eventID := bson.NewObjectID()
+	endpointA := bson.NewObjectID()
+	endpointB := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	oldPendingTime := now.Add(-5 * time.Minute)
+
+	deliveries := []any{
+		bson.M{
+			"event_id":     eventID,
+			"endpoint_id":  endpointA,
+			"status":       "delivered",
+			"attempts":     1,
+			"max_attempts": 3,
+			"delivered_at": now,
+			"created_at":   now,
+			"updated_at":   now,
+		},
+		bson.M{
+			"event_id":        eventID,
+			"endpoint_id":     endpointB,
+			"status":          "pending",
+			"attempts":        1,
+			"max_attempts":    3,
+			"next_attempt_at": now.Add(time.Minute),
+			"created_at":      oldPendingTime,
+			"updated_at":      now,
+		},
+		bson.M{
+			"event_id":     bson.NewObjectID(),
+			"endpoint_id":  endpointA,
+			"status":       "failed",
+			"attempts":     3,
+			"max_attempts": 3,
+			"failed_at":    now,
+			"created_at":   now,
+			"updated_at":   now,
+		},
+		bson.M{
+			"event_id":     bson.NewObjectID(),
+			"endpoint_id":  endpointA,
+			"status":       "processing",
+			"attempts":     1,
+			"max_attempts": 3,
+			"lease_until":  now.Add(time.Minute),
+			"created_at":   now,
+			"updated_at":   now,
+		},
+	}
+
+	if _, err := db.Collection("deliveries").InsertMany(
+		ctx, deliveries,
+	); err != nil {
+		t.Fatalf("insert deliveries: %v", err)
+	}
+
+	recorder := serveMetricsIntegrationRequest(t, handler)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"status = %d, want %d; body: %s",
+			recorder.Code,
+			http.StatusOK,
+			recorder.Body.String(),
+		)
+	}
+
+	body := recorder.Body.String()
+
+	expected := []string{
+		`relay_deliveries{status="pending"} 1`,
+		`relay_deliveries{status="processing"} 1`,
+		`relay_deliveries{status="delivered"} 1`,
+		`relay_deliveries{status="failed"} 1`,
+		"relay_deliveries_terminal_failures 1",
+		fmt.Sprintf(
+			`relay_deliveries_per_endpoint{endpoint_id=%q,status="delivered"} 1`,
+			endpointA.Hex(),
+		),
+		fmt.Sprintf(
+			`relay_deliveries_per_endpoint{endpoint_id=%q,status="failed"} 1`,
+			endpointA.Hex(),
+		),
+		fmt.Sprintf(
+			`relay_deliveries_per_endpoint{endpoint_id=%q,status="pending"} 1`,
+			endpointB.Hex(),
+		),
+		"relay_deliveries_oldest_pending_seconds",
+	}
+
+	for _, metric := range expected {
+		if !strings.Contains(body, metric) {
+			t.Errorf("metrics output missing %q", metric)
+		}
+	}
+}
+
+func TestMetricsIntegrationWorkerHealth(t *testing.T) {
+	_, handler := newMongoMetricsIntegration(t)
+
+	health := &fakeWorkerHealth{
+		lastProcessedAt: time.Now().UTC(),
+		errorsTotal:     3,
+	}
+	handler.WithWorkerHealth(health)
+
+	recorder := serveMetricsIntegrationRequest(t, handler)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"status = %d, want %d; body: %s",
+			recorder.Code,
+			http.StatusOK,
+			recorder.Body.String(),
+		)
+	}
+
+	body := recorder.Body.String()
+
+	expected := []string{
+		"relay_worker_last_processed_timestamp_seconds",
+		"relay_worker_processing_errors_total 3",
+	}
+
+	for _, metric := range expected {
+		if !strings.Contains(body, metric) {
+			t.Errorf("metrics output missing %q", metric)
+		}
+	}
+}
+
+func TestMetricsIntegrationWorkerHealthAbsentWithoutWorker(t *testing.T) {
+	_, handler := newMongoMetricsIntegration(t)
+
+	recorder := serveMetricsIntegrationRequest(t, handler)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+
+	body := recorder.Body.String()
+
+	// Without a worker attached, worker health metrics must not appear.
+	if strings.Contains(body, "relay_worker_last_processed_timestamp_seconds") {
+		t.Error("worker timestamp metric appeared without a worker")
+	}
+	if strings.Contains(body, "relay_worker_processing_errors_total") {
+		t.Error("worker errors metric appeared without a worker")
 	}
 }
