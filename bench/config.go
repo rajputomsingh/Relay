@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -80,6 +81,14 @@ type Config struct {
 	// Quiet suppresses per-tick progress lines. Errors and summaries
 	// still print.
 	Quiet bool
+
+	// Matrix, when true, runs every supported behavior at every
+	// configured concurrency level and writes a consolidated summary.
+	Matrix bool
+
+	// ConcurrencyLevels controls which concurrency values the matrix
+	// runner exercises. Ignored when Matrix is false.
+	ConcurrencyLevels []int
 }
 
 // ErrUsage is returned when the CLI arguments are invalid.
@@ -103,6 +112,8 @@ func parseFlags(args []string) (Config, error) {
 		transientFailures int
 		warmupDeliveries  int
 		quiet             bool
+		matrix            bool
+		concurrencyList   string
 	)
 
 	fs.IntVar(&concurrency, "concurrency", 4,
@@ -129,6 +140,10 @@ func parseFlags(args []string) (Config, error) {
 		"deliveries processed and discarded before measurement")
 	fs.BoolVar(&quiet, "quiet", false,
 		"suppress per-tick progress output")
+	fs.BoolVar(&matrix, "matrix", false,
+		"run every behavior across every concurrency level")
+	fs.StringVar(&concurrencyList, "concurrency-levels", "1,4,8,16",
+		"comma-separated concurrency levels for --matrix")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("%w: %v", ErrUsage, err)
@@ -147,6 +162,8 @@ func parseFlags(args []string) (Config, error) {
 		TransientFailures: transientFailures,
 		WarmupDeliveries:  warmupDeliveries,
 		Quiet:             quiet,
+		Matrix:            matrix,
+		ConcurrencyLevels: parseConcurrencyLevels(concurrencyList),
 	}
 
 	if cfg.MongoURI == "" {
@@ -200,6 +217,13 @@ func (c Config) validate() error {
 		)
 	}
 
+	if c.Matrix && len(c.ConcurrencyLevels) == 0 {
+		return fmt.Errorf(
+			"%w: --matrix requires at least one valid concurrency level",
+			ErrUsage,
+		)
+	}
+
 	return nil
 }
 
@@ -218,4 +242,23 @@ func behaviorList() string {
 		names = append(names, string(b))
 	}
 	return strings.Join(names, ", ")
+}
+
+// parseConcurrencyLevels parses "1,4,8,16" into a slice of ints.
+// Invalid entries are silently skipped; validate() rejects an empty
+// result when the matrix flag is set.
+func parseConcurrencyLevels(raw string) []int {
+	parts := strings.Split(raw, ",")
+	out := make([]int, 0, len(parts))
+	for _, part := range parts {
+		v, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		if v < 1 || v > 32 {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }

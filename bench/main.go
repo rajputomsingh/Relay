@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -40,11 +41,12 @@ func runAll() error {
 
 	logger.Info(
 		"benchmark configuration resolved",
+		"matrix", cfg.Matrix,
 		"concurrency", cfg.Concurrency,
+		"concurrency_levels", cfg.ConcurrencyLevels,
 		"behavior", cfg.Behavior,
 		"count", cfg.Count,
 		"drain_timeout", cfg.DrainTimeout.String(),
-		"warmup", cfg.WarmupDeliveries,
 		"output", cfg.OutputDir,
 	)
 
@@ -55,19 +57,19 @@ func runAll() error {
 	)
 	defer cancel()
 
-	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*1e9)
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelConnect()
 
 	client, err := mongo.Connect(options.Client().
 		ApplyURI(cfg.MongoURI).
 		SetAppName("relay-bench").
-		SetServerSelectionTimeout(5e9))
+		SetServerSelectionTimeout(5 * time.Second))
 	if err != nil {
 		return fmt.Errorf("connect mongo: %w", err)
 	}
 	defer func() {
 		disconnectCtx, disconnectCancel := context.WithTimeout(
-			context.Background(), 5*1e9,
+			context.Background(), 5*time.Second,
 		)
 		defer disconnectCancel()
 		_ = client.Disconnect(disconnectCtx)
@@ -77,72 +79,14 @@ func runAll() error {
 		return fmt.Errorf("ping mongo: %w", err)
 	}
 
-	dbName := cfg.Database
-	if dbName == "" {
-		dbName = uniqueDatabaseName()
-	}
-	db := client.Database(dbName)
-
-	logger.Info("benchmark database selected", "database", dbName)
-
-	defer func() {
-		dropCtx, dropCancel := context.WithTimeout(
-			context.Background(), 10*1e9,
-		)
-		defer dropCancel()
-		if err := dropBenchmarkDatabase(dropCtx, db); err != nil {
-			logger.Warn("failed to drop benchmark database", "error", err)
-		}
-	}()
-
-	if err := ensureIndexes(ctx, db); err != nil {
-		return err
+	if cfg.Matrix {
+		return runMatrix(ctx, cfg, client, logger)
 	}
 
-	server := newMockServer(
-		cfg.Behavior,
-		cfg.SlowDelay,
-		cfg.TransientFailures,
-	)
-	defer server.Close()
-
-	logServerStart(logger, server)
-
-	seeded, err := seed(
-		ctx,
-		db,
-		server.URL(),
-		cfg.Count,
-		cfg.MaxAttemptsOrDefault(),
-	)
+	result, err := runSingle(ctx, cfg, client, logger)
 	if err != nil {
 		return err
 	}
-
-	logger.Info(
-		"deliveries seeded",
-		"count", len(seeded.DeliveryIDs),
-		"endpoint_id", seeded.EndpointID.Hex(),
-	)
-
-	result, err := run(ctx, runnerOptions{
-		cfg:      cfg,
-		database: db,
-		dbName:   dbName,
-		server:   server,
-		seedData: seeded,
-		logger:   logger,
-	})
-	if err != nil {
-		return err
-	}
-
-	path, err := writeJSONResult(cfg, result)
-	if err != nil {
-		return err
-	}
-
-	logger.Info("result written", "path", path)
 	summarize(result)
 	return nil
 }
