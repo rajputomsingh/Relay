@@ -124,7 +124,7 @@ func parseFlags(args []string) (Config, error) {
 	)
 
 	fs.IntVar(&concurrency, "concurrency", 4,
-		"delivery worker concurrency (1-32)")
+		"delivery worker concurrency (1-128)")
 	fs.StringVar(&behavior, "behavior", string(BehaviorFast),
 		"downstream behavior: fast, slow, http-500, timeout, transient-503, outage, unavailable")
 	fs.IntVar(&count, "count", 500,
@@ -189,8 +189,8 @@ func parseFlags(args []string) (Config, error) {
 
 func (c Config) validate() error {
 	switch {
-	case c.Concurrency < 1 || c.Concurrency > 32:
-		return fmt.Errorf("%w: concurrency must be between 1 and 32", ErrUsage)
+	case c.Concurrency < 1 || c.Concurrency > 128:
+		return fmt.Errorf("%w: concurrency must be between 1 and 128", ErrUsage)
 	case c.Count < 1:
 		return fmt.Errorf("%w: count must be positive", ErrUsage)
 	case c.MaxAttempts < 1 || c.MaxAttempts > 20:
@@ -277,7 +277,7 @@ func parseConcurrencyLevels(raw string) []int {
 		if err != nil {
 			continue
 		}
-		if v < 1 || v > 32 {
+		if v < 1 || v > 128 {
 			continue
 		}
 		out = append(out, v)

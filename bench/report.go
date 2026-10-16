@@ -109,6 +109,27 @@ func summarize(result runResult) {
 		)
 	}
 
+	if result.Queue.QueueSamples > 0 {
+		fmt.Printf(
+			"queue_growth max=%d p50=%.0f p95=%.0f  samples=%d\n",
+			result.Queue.QueueGrowthMax,
+			result.Queue.QueueGrowthP50,
+			result.Queue.QueueGrowthP95,
+			result.Queue.QueueSamples,
+		)
+	}
+
+	if result.Mongo.Available {
+		fmt.Printf(
+			"mongo  version=%s inserts=%d queries=%d updates=%d conns=%d\n",
+			result.Mongo.Version,
+			result.Mongo.OpcountersInsert,
+			result.Mongo.OpcountersQuery,
+			result.Mongo.OpcountersUpdate,
+			result.Mongo.ConnectionsCurrent,
+		)
+	}
+
 	fmt.Printf(
 		"queue_to_first  p50=%.0fms p95=%.0fms p99=%.0fms\n",
 		result.Queue.ToFirstAttemptP50MS,
