@@ -1,16 +1,40 @@
-﻿# Relay v0.2.0 — Event Inspection API
+﻿    # Relay v0.4.0 - Multi-Endpoint Delivery
 
-## Highlights
-- Added authenticated event inspection with GET /v1/events/{id}.
-- Added delivery attempt history with cursor-based pagination.
-- Added API key authentication and input validation.
-- Excluded internal delivery errors from public responses.
-- Added tests for authorization, validation, missing events, storage errors, and pagination.
+    ## Highlights
 
-## Validation
-- go test ./...
-- go vet ./...
-- go build ./...
+    - Introduced multi-endpoint webhook delivery, allowing accepted events to be distributed to multiple configured destinations.
+    - Added endpoint management APIs for registering, listing, updating, and disabling webhook destinations.
+    - Implemented event filtering to route events to matching, enabled endpoints.
+    - Added independent delivery state, retry limits, and attempt history for each endpoint.
+    - Introduced per-endpoint HMAC-SHA256 webhook signing.
+    - Added persistent delivery tracking with lease-based concurrency protection.
+    - Preserved backward compatibility through automatic default-endpoint initialization.
 
-## Core Platform
-Relay includes authenticated event ingestion, reliable webhook delivery, and delivery attempt history.
+    ## Reliability & Security
+
+    - Exponential backoff with jitter and bounded delivery attempts.
+    - Atomic delivery claims and lease-token fencing to prevent stale workers from overwriting delivery state.
+    - Endpoint-specific signing secrets for authenticating outbound webhook requests.
+    - Persistent attempt history for debugging and delivery inspection.
+    - Idempotent delivery creation using unique event-to-endpoint records.
+
+    ## Validation
+
+    Run the following commands to validate the project:
+
+    ```bash
+    go test ./...
+    go vet ./...
+    go build ./...
+    ```
+
+    ## Core Platform
+
+    Relay is a webhook delivery engine built with Go and MongoDB. It provides authenticated event ingestion, idempotent persistence, asynchronous delivery, automatic retries, multi-endpoint fan-out, delivery inspection, and event replay.
+
+    For implementation details, see [Multi-Endpoint Delivery](docs/multi-endpoint-delivery.md).
+
+    ---
+
+    **Release:** v0.4.0  
+    **Focus:** Multi-endpoint delivery infrastructure
