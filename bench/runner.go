@@ -64,10 +64,11 @@ type throughputResult struct {
 }
 
 type attemptStats struct {
-	Count         int     `json:"count"`
-	DurationP50MS float64 `json:"duration_p50_ms"`
-	DurationP95MS float64 `json:"duration_p95_ms"`
-	DurationP99MS float64 `json:"duration_p99_ms"`
+	Count         int           `json:"count"`
+	DurationP50MS float64       `json:"duration_p50_ms"`
+	DurationP95MS float64       `json:"duration_p95_ms"`
+	DurationP99MS float64       `json:"duration_p99_ms"`
+	Distribution  map[int]int64 `json:"distribution,omitempty"`
 }
 
 type httpStats struct {
@@ -86,8 +87,9 @@ type queueStats struct {
 	ToDeliveredP50MS    float64 `json:"to_delivered_p50_ms"`
 	ToDeliveredP95MS    float64 `json:"to_delivered_p95_ms"`
 	ToDeliveredP99MS    float64 `json:"to_delivered_p99_ms"`
+	RetryGapP50MS       float64 `json:"retry_gap_p50_ms,omitempty"`
+	RetryGapP95MS       float64 `json:"retry_gap_p95_ms,omitempty"`
 }
-
 type finalState struct {
 	Pending    int64 `json:"pending"`
 	Processing int64 `json:"processing"`
