@@ -91,7 +91,16 @@ type queueStats struct {
 	ToDeliveredP99MS    float64 `json:"to_delivered_p99_ms"`
 	RetryGapP50MS       float64 `json:"retry_gap_p50_ms,omitempty"`
 	RetryGapP95MS       float64 `json:"retry_gap_p95_ms,omitempty"`
+
+	// Queue growth samples the pending count once per second for the
+	// duration of the run. Max and percentiles expose how large the
+	// backlog grew; useful for detecting ingestion-above-capacity.
+	QueueGrowthMax int64   `json:"queue_growth_max,omitempty"`
+	QueueGrowthP50 float64 `json:"queue_growth_p50,omitempty"`
+	QueueGrowthP95 float64 `json:"queue_growth_p95,omitempty"`
+	QueueSamples   int     `json:"queue_samples,omitempty"`
 }
+
 type finalState struct {
 	Pending    int64 `json:"pending"`
 	Processing int64 `json:"processing"`
@@ -107,9 +116,13 @@ type serverStats struct {
 }
 
 type mongoStats struct {
-	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"`
-	Version   string `json:"version,omitempty"`
+	Available          bool   `json:"available"`
+	Reason             string `json:"reason,omitempty"`
+	Version            string `json:"version,omitempty"`
+	OpcountersInsert   int64  `json:"opcounters_insert,omitempty"`
+	OpcountersQuery    int64  `json:"opcounters_query,omitempty"`
+	OpcountersUpdate   int64  `json:"opcounters_update,omitempty"`
+	ConnectionsCurrent int    `json:"connections_current,omitempty"`
 }
 
 // productionTimings mirrors the values in cmd/relay/main.go so
@@ -182,6 +195,10 @@ func run(
 
 	drainDeadline := time.Now().Add(opts.cfg.DrainTimeout)
 
+	// pendingSamples records the pending count once per second for the
+	// duration of the run. Used to compute queue growth statistics.
+	pendingSamples := make([]int64, 0, 64)
+
 	for {
 		pending, processing, delivered, failed, err :=
 			countByStatus(ctx, deliveriesCol)
@@ -190,6 +207,8 @@ func run(
 			<-workerDone
 			return runResult{}, fmt.Errorf("count by status: %w", err)
 		}
+
+		pendingSamples = append(pendingSamples, pending)
 
 		if !opts.cfg.Quiet {
 			opts.logger.Info(
@@ -235,6 +254,7 @@ func run(
 		startedAt,
 		finishedAt,
 		drainSeconds,
+		pendingSamples,
 	)
 	if err != nil {
 		return runResult{}, err

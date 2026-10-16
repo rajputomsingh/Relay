@@ -97,6 +97,17 @@ func runSingle(
 	client *mongo.Client,
 	logger *slog.Logger,
 ) (runResult, error) {
+	// The production delivery.Worker caps concurrency at 32. Reject
+	// configurations that would pass harness validation but fail in
+	// the worker after seeding thousands of deliveries, leaving the
+	// harness hung waiting for a drain that can never complete.
+	if cfg.Concurrency > 32 {
+		return runResult{}, fmt.Errorf(
+			"concurrency %d exceeds worker maximum of 32",
+			cfg.Concurrency,
+		)
+	}
+
 	dbName := cfg.Database
 	if dbName == "" {
 		dbName = uniqueDatabaseName()
