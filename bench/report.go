@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -73,6 +75,31 @@ func summarize(result runResult) {
 		result.Attempts.DurationP99MS,
 		result.Attempts.Count,
 	)
+
+	if len(result.Attempts.Distribution) > 0 {
+		keys := make([]int, 0, len(result.Attempts.Distribution))
+		for k := range result.Attempts.Distribution {
+			keys = append(keys, k)
+		}
+		sort.Ints(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(
+				parts,
+				fmt.Sprintf("%d=%d", k, result.Attempts.Distribution[k]),
+			)
+		}
+		fmt.Printf("attempts per number: %s\n", strings.Join(parts, " "))
+	}
+
+	if result.Queue.RetryGapP50MS > 0 {
+		fmt.Printf(
+			"retry_gap p50=%.0fms p95=%.0fms\n",
+			result.Queue.RetryGapP50MS,
+			result.Queue.RetryGapP95MS,
+		)
+	}
+
 	fmt.Printf(
 		"queue_to_first  p50=%.0fms p95=%.0fms p99=%.0fms\n",
 		result.Queue.ToFirstAttemptP50MS,

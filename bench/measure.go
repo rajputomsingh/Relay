@@ -34,6 +34,16 @@ func collectResult(
 		return runResult{}, err
 	}
 
+	attemptDistribution, err := readAttemptDistribution(ctx, attemptsCol)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	retryGaps, err := readRetryGaps(ctx, attemptsCol)
+	if err != nil {
+		return runResult{}, err
+	}
+
 	queueToFirst, queueToDelivered, err := readQueueLatencies(
 		ctx, deliveriesCol, attemptsCol,
 	)
@@ -94,6 +104,7 @@ func collectResult(
 			DurationP50MS: percentileMS(attemptDurations, 0.50),
 			DurationP95MS: percentileMS(attemptDurations, 0.95),
 			DurationP99MS: percentileMS(attemptDurations, 0.99),
+			Distribution:  attemptDistribution,
 		},
 		HTTP: httpStats{
 			Requests:  serverSnap.Requests,
@@ -110,6 +121,8 @@ func collectResult(
 			ToDeliveredP50MS:    percentileMS(queueToDelivered, 0.50),
 			ToDeliveredP95MS:    percentileMS(queueToDelivered, 0.95),
 			ToDeliveredP99MS:    percentileMS(queueToDelivered, 0.99),
+			RetryGapP50MS:       percentileMS(retryGaps, 0.50),
+			RetryGapP95MS:       percentileMS(retryGaps, 0.95),
 		},
 		Final: final,
 		Server: serverStats{
@@ -172,6 +185,89 @@ func readAttemptDurations(
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("iterate attempts: %w", err)
+	}
+	return out, nil
+}
+
+// readAttemptDistribution returns a count of attempts grouped by
+// attempt number.
+//
+// Example: {1: 200, 2: 200, 3: 50} means 200 deliveries made at least
+// one attempt, 200 made at least two, and 50 made three. The shape of
+// this map shows how far into the retry budget deliveries went.
+func readAttemptDistribution(
+	ctx context.Context,
+	attemptsCol *mongo.Collection,
+) (map[int]int64, error) {
+	cursor, err := attemptsCol.Aggregate(ctx, mongo.Pipeline{
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id":   "$attempt_number",
+			"count": bson.M{"$sum": 1},
+		}}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("aggregate attempts: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	out := make(map[int]int64)
+	for cursor.Next(ctx) {
+		var row struct {
+			Attempt int   `bson:"_id"`
+			Count   int64 `bson:"count"`
+		}
+		if err := cursor.Decode(&row); err != nil {
+			return nil, fmt.Errorf("decode distribution: %w", err)
+		}
+		out[row.Attempt] = row.Count
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate distribution: %w", err)
+	}
+	return out, nil
+}
+
+// readRetryGaps returns the gap in milliseconds between consecutive
+// attempts of the same delivery. Requires at least two attempts on a
+// delivery to produce a sample.
+//
+// Attempts are keyed by event_id, and the delivery's event_id ties
+// them together. Each event maps to exactly one delivery in the
+// benchmark schema.
+func readRetryGaps(
+	ctx context.Context,
+	attemptsCol *mongo.Collection,
+) ([]int64, error) {
+	cursor, err := attemptsCol.Aggregate(ctx, mongo.Pipeline{
+		bson.D{{Key: "$sort", Value: bson.D{
+			{Key: "event_id", Value: 1},
+			{Key: "started_at", Value: 1},
+		}}},
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id":     "$event_id",
+			"started": bson.M{"$push": "$started_at"},
+		}}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("aggregate retry gaps: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	out := make([]int64, 0)
+	for cursor.Next(ctx) {
+		var row struct {
+			Started []time.Time `bson:"started"`
+		}
+		if err := cursor.Decode(&row); err != nil {
+			return nil, fmt.Errorf("decode retry gap: %w", err)
+		}
+		for i := 1; i < len(row.Started); i++ {
+			gap := row.Started[i].Sub(row.Started[i-1]).Milliseconds()
+			out = append(out, gap)
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retry gaps: %w", err)
 	}
 	return out, nil
 }

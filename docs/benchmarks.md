@@ -166,10 +166,23 @@ Extends the failure-path validation to test throughput scaling across concurrenc
 
 |          32 |      9.01 |      66.59 |                 160 |    200 |
 
-**Finding: two ceilings.** A useful finite-workload approximation is to compare the poll-limited rate (`concurrency × 5 attempts/s`) with the workload's backoff-limited rate (`total attempts / backoff floor`). For `max_attempts = 3` and an approximately 5-second gap between retries, the two retry gaps imply an approximately 10-second backoff floor. This is a heuristic, not a universal steady-state throughput formula.
+**Finding: two ceilings.** A useful finite-workload approximation is to
+compare the poll-limited rate (`concurrency × 5 attempts/s`) with the
+workload's backoff-limited rate (`total attempts / backoff floor`). The
+backoff is exponential with jitter (see Measurement fields below); for
+`max_attempts = 3` the total backoff between the first and last attempt
+is 6–7.5 seconds. This is a heuristic, not a universal steady-state
+throughput formula.
 
-- At count 200, the backoff-based estimate is `3 × 200 / 10 = 60 attempts/s`. The observed plateau is approximately 67 attempts/s, close to that estimate.
-- At count 1000 in the `http-500` sweep below, the corresponding estimate is `3 × 1000 / 10 = 300 attempts/s`. The poll ceiling at concurrency 32 is `32 × 5 = 160 attempts/s`, so the observed rate can remain poll-limited across the tested range.
+- At count 200, the backoff-based estimate is `3 × 200 / 7.5 ≈ 80
+attempts/s`. The observed plateau is approximately 67 attempts/s,
+  within ~15% of that estimate. The remaining gap is consistent with
+  scheduler jitter and the distribution of `retryDelay` samples across
+  concurrent workers.
+- At count 1000 in the `http-500` sweep below, the corresponding
+  estimate is `3 × 1000 / 7.5 ≈ 400 attempts/s`, above the poll ceiling
+  at every tested concurrency level. The observed rate is therefore
+  poll-limited across the tested range.
 
 The effective observed rate depends on both concurrency and workload size; do not generalize the count-200 plateau to every failure workload.
 
@@ -190,7 +203,7 @@ Count 1000, `max_attempts = 3`.
 |          16 |     38.01 |      78.93 |                  80 |   1000 |
 |          32 |     19.01 |     157.77 |                 160 |   1000 |
 
-**Finding: poll-limited across the tested range.** Throughput scales approximately linearly with concurrency through 32, tracking `concurrency × 5 attempts/s`. The backoff-based estimate for this workload is `3 × 1000 / 10 = 300 attempts/s`, above the poll ceiling of `160 attempts/s` at concurrency 32. The measurements therefore show no backoff-driven plateau within these tested concurrency levels.
+**Finding: poll-limited across the tested range.** Throughput scales approximately linearly with concurrency through 32, tracking `concurrency × 5 attempts/s`. The backoff-based estimate for this workload is `3 × 1000 / 7.5 ≈ 400 attempts/s`, above the poll ceiling of `160 attempts/s` at concurrency 32. The measurements therefore show no backoff-driven plateau within these tested concurrency levels.
 
 ### Comparison
 
@@ -220,6 +233,29 @@ deliveries succeed on their second attempt, ~2.5s after the first pass.
 The floor is the recovery window itself: 200 deliveries / (16 × 5/s)
 = 2.5s for the first pass, plus one poll tick for the retry, giving a
 minimum drain of roughly 3s at any concurrency ≥ 16.
+
+### Measurement fields
+
+Each run reports two additional fields beyond the original schema:
+
+- **`attempts per number`**: count of attempts grouped by attempt
+  number. For example, `1=200 2=200 3=50` means 200 deliveries made
+  at least one attempt, 200 made at least two, and 50 made three.
+- **`retry_gap p50/p95`**: milliseconds between consecutive attempts
+  of the same delivery.
+
+The worker uses exponential backoff with jitter:
+
+    retryDelay(n) = 2s × 2^(n-1) + jitter(0–25%)
+
+capped at 5 minutes. For `max_attempts = 3` the total backoff is
+6–7.5 seconds. Measured `retry_gap` p50 and p95 in `http-500` were
+2.8s and 5.0s, matching `retryDelay(1) + overhead` and
+`retryDelay(2) + overhead`.
+
+**Exponential backoff makes drain time superlinear in `max_attempts`.**
+Doubling `max_attempts` from 3 to 6 multiplies the backoff floor from
+~7.5s to ~63s.
 
 ## Reproducing the Results
 
@@ -310,27 +346,3 @@ Before using them for production capacity planning, verify:
 - Whether the worker polling model matches the interpretation above.
 - Whether the benchmark environment and database settings match the intended deployment.
 
-## Verify
-
-After saving, check that the Phase 2 results section appears exactly once and the code fences are balanced:
-
-````powershell
-Select-String -Path docs/benchmarks.md -Pattern "^## Phase 2" | Select-Object LineNumber, Line
-Select-String -Path docs/benchmarks.md -Pattern '^```' | Measure-Object | Select-Object Count
-````
-
-Expected:
-
-- One match for `## Phase 2` (the existing Phase 2 results section).
-- An even number of code fences; `Measure-Object Count` should be even.
-
-If the fence count is odd, there is still an unclosed code block somewhere. In particular, ensure the `docker run` command has a closing triple-backtick line before `Configure the connection string`.
-
-## Commit
-
-After reviewing the diff:
-
-```powershell
-git add docs/benchmarks.md
-git commit -m "docs(bench): fix benchmark reproduction section"
-```

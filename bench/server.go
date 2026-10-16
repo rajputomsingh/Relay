@@ -72,7 +72,19 @@ func newMockServer(
 
 func (s *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	clientCanceled := false
+
 	defer func() {
+		// Do not record a handler duration for requests that the
+		// client canceled. The handler may have slept past the
+		// client's timeout while waiting for context cancellation
+		// to propagate; that duration reflects the mock's internal
+		// sleep, not the client-observed request latency. Counting
+		// it would make http.p99 look like the sleep duration
+		// instead of the actual request timeout.
+		if clientCanceled {
+			return
+		}
 		elapsed := time.Since(started).Milliseconds()
 		s.mu.Lock()
 		s.durations = append(s.durations, elapsed)
@@ -105,8 +117,7 @@ func (s *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(30 * time.Second):
 			w.WriteHeader(http.StatusNoContent)
 		case <-r.Context().Done():
-			// Client canceled. Nothing to write; the connection is
-			// already gone.
+			clientCanceled = true
 		}
 
 	case BehaviorTransient:
