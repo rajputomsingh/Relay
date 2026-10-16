@@ -12,3 +12,5 @@ coverage.out
 # Benchmark harness output. JSON per-run files are exploratory;
 # only the summary report and the harness itself are version-controlled.
 bench/results/*.json
+# Benchmark run output. Regenerated on every matrix run.
+bench/results/summary.md
