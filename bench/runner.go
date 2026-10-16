@@ -92,7 +92,6 @@ type queueStats struct {
 	RetryGapP50MS       float64 `json:"retry_gap_p50_ms,omitempty"`
 	RetryGapP95MS       float64 `json:"retry_gap_p95_ms,omitempty"`
 }
-
 type finalState struct {
 	Pending    int64 `json:"pending"`
 	Processing int64 `json:"processing"`
