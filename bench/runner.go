@@ -38,6 +38,7 @@ type runConfig struct {
 	LeaseDuration     time.Duration `json:"lease_duration_ns"`
 	SlowDelay         time.Duration `json:"slow_delay_ns,omitempty"`
 	TransientFailures int           `json:"transient_failures,omitempty"`
+	OutageDuration    time.Duration `json:"outage_duration_ns,omitempty"`
 	Database          string        `json:"database"`
 }
 
@@ -51,7 +52,8 @@ type environmentInfo struct {
 }
 
 type timingResult struct {
-	DrainSeconds float64 `json:"drain_seconds"`
+	DrainSeconds         float64 `json:"drain_seconds"`
+	RecoveryDrainSeconds float64 `json:"recovery_drain_seconds,omitempty"`
 }
 
 type throughputResult struct {

@@ -24,6 +24,7 @@ const (
 	BehaviorHTTP500     Behavior = "http-500"
 	BehaviorTimeout     Behavior = "timeout"
 	BehaviorTransient   Behavior = "transient-503"
+	BehaviorOutage      Behavior = "outage"
 	BehaviorUnavailable Behavior = "unavailable"
 )
 
@@ -34,6 +35,7 @@ var allBehaviors = []Behavior{
 	BehaviorHTTP500,
 	BehaviorTimeout,
 	BehaviorTransient,
+	BehaviorOutage,
 	BehaviorUnavailable,
 }
 
@@ -74,6 +76,10 @@ type Config struct {
 	// "transient-503" behavior fail before recovering.
 	TransientFailures int
 
+	// OutageDuration is how long the mock returns 503 responses for
+	// BehaviorOutage before recovering. Ignored for other behaviors.
+	OutageDuration time.Duration
+
 	// WarmupDeliveries are seeded and drained before the measured run
 	// begins. Their results are discarded from the report.
 	WarmupDeliveries int
@@ -110,6 +116,7 @@ func parseFlags(args []string) (Config, error) {
 		outputDir         string
 		slowDelay         time.Duration
 		transientFailures int
+		outageDuration    time.Duration
 		warmupDeliveries  int
 		quiet             bool
 		matrix            bool
@@ -119,7 +126,7 @@ func parseFlags(args []string) (Config, error) {
 	fs.IntVar(&concurrency, "concurrency", 4,
 		"delivery worker concurrency (1-32)")
 	fs.StringVar(&behavior, "behavior", string(BehaviorFast),
-		"downstream behavior: fast, slow, http-500, timeout, transient-503, unavailable")
+		"downstream behavior: fast, slow, http-500, timeout, transient-503, outage, unavailable")
 	fs.IntVar(&count, "count", 500,
 		"number of deliveries seeded before the run")
 	fs.IntVar(&maxAttempts, "max-attempts", 8,
@@ -136,6 +143,8 @@ func parseFlags(args []string) (Config, error) {
 		"artificial latency for the slow behavior")
 	fs.IntVar(&transientFailures, "transient-failures", 50,
 		"number of initial failures before the transient-503 behavior recovers")
+	fs.DurationVar(&outageDuration, "outage-duration", 30*time.Second,
+		"outage length for the outage behavior")
 	fs.IntVar(&warmupDeliveries, "warmup", 50,
 		"deliveries processed and discarded before measurement")
 	fs.BoolVar(&quiet, "quiet", false,
@@ -160,6 +169,7 @@ func parseFlags(args []string) (Config, error) {
 		OutputDir:         strings.TrimSpace(outputDir),
 		SlowDelay:         slowDelay,
 		TransientFailures: transientFailures,
+		OutageDuration:    outageDuration,
 		WarmupDeliveries:  warmupDeliveries,
 		Quiet:             quiet,
 		Matrix:            matrix,
@@ -204,6 +214,11 @@ func (c Config) validate() error {
 			"%w: transient-failures must not be negative",
 			ErrUsage,
 		)
+	case c.OutageDuration < 0:
+		return fmt.Errorf(
+			"%w: outage-duration must not be negative",
+			ErrUsage,
+		)
 	case c.WarmupDeliveries < 0:
 		return fmt.Errorf("%w: warmup must not be negative", ErrUsage)
 	}
@@ -214,6 +229,13 @@ func (c Config) validate() error {
 			ErrUsage,
 			c.Behavior,
 			behaviorList(),
+		)
+	}
+
+	if c.Behavior == BehaviorOutage && c.OutageDuration <= 0 {
+		return fmt.Errorf(
+			"%w: --outage-duration must be positive for the outage behavior",
+			ErrUsage,
 		)
 	}
 

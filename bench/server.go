@@ -22,6 +22,12 @@ type mockServer struct {
 	slowDelay         time.Duration
 	transientFailures int
 
+	// outageDuration is the configured outage length for BehaviorOutage.
+	// outageUntil is when the mock begins serving successful responses
+	// again. Both are zero for other behaviors.
+	outageDuration time.Duration
+	outageUntil    time.Time
+
 	requestCount  atomic.Int64
 	successCount  atomic.Int64
 	failureCount  atomic.Int64
@@ -42,15 +48,26 @@ type mockServerSnapshot struct {
 }
 
 // newMockServer starts a mock webhook server for the given behavior.
+//
+// The outageDuration parameter is only used when behavior is
+// BehaviorOutage. The outage clock starts at construction time; for
+// benchmark runs this coincides with the start of the measured window,
+// because the harness constructs the mock immediately before seeding.
 func newMockServer(
 	behavior Behavior,
 	slowDelay time.Duration,
 	transientFailures int,
+	outageDuration time.Duration,
 ) *mockServer {
 	ms := &mockServer{
 		behavior:          behavior,
 		slowDelay:         slowDelay,
 		transientFailures: transientFailures,
+		outageDuration:    outageDuration,
+	}
+
+	if behavior == BehaviorOutage && outageDuration > 0 {
+		ms.outageUntil = time.Now().Add(outageDuration)
 	}
 
 	if behavior == BehaviorUnavailable {
@@ -130,6 +147,20 @@ func (s *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		s.successCount.Add(1)
 
+	case BehaviorOutage:
+		// Time-based failure: return 503 until outageUntil, then 204.
+		// Unlike transient-503, the trigger is wall-clock time, not
+		// request count. This models a downstream that is genuinely
+		// down for a fixed window rather than failing a fixed number
+		// of requests.
+		if time.Now().Before(s.outageUntil) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			s.failureCount.Add(1)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		s.successCount.Add(1)
+
 	case BehaviorUnavailable:
 		// Never reached — no listener is bound for this behavior.
 		// This branch exists to keep the switch exhaustive.
@@ -151,6 +182,12 @@ func (s *mockServer) Close() {
 	if s.Server != nil {
 		s.Server.Close()
 	}
+}
+
+// OutageUntil returns the time at which the mock stops returning
+// failures for BehaviorOutage. Zero for other behaviors.
+func (s *mockServer) OutageUntil() time.Time {
+	return s.outageUntil
 }
 
 // snapshot returns the current counters without holding the duration lock.
@@ -178,5 +215,6 @@ func logServerStart(logger *slog.Logger, s *mockServer) {
 		"mock webhook server started",
 		"behavior", s.behavior,
 		"url", s.URL(),
+		"outage_until", s.outageUntil.Format(time.RFC3339),
 	)
 }

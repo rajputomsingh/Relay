@@ -54,6 +54,15 @@ func summarize(result runResult) {
 		result.Throughput.SuccessfulPerSecond,
 		result.Throughput.AttemptedPerSecond,
 	)
+
+	if result.Timing.RecoveryDrainSeconds > 0 {
+		fmt.Printf(
+			"recovery_drain=%.1fs (outage ended at t=%.1fs)\n",
+			result.Timing.RecoveryDrainSeconds,
+			result.Config.OutageDuration.Seconds(),
+		)
+	}
+
 	fmt.Printf(
 		"delivered=%d failed=%d pending=%d  failure_rate=%.3f\n",
 		result.Throughput.SuccessfulTotal,

@@ -61,6 +61,16 @@ func collectResult(
 		failureRate = float64(final.Failed) / float64(completed)
 	}
 
+	// RecoveryDrainSeconds measures the time from the end of a
+	// configured outage to the moment all deliveries reach terminal
+	// state. It is zero for behaviors with no outage window.
+	recoverySeconds := 0.0
+	if until := opts.server.OutageUntil(); !until.IsZero() {
+		if finishedAt.After(until) {
+			recoverySeconds = finishedAt.Sub(until).Seconds()
+		}
+	}
+
 	serverSnap := opts.server.snapshot()
 	httpDurations := opts.server.durationSnapshot()
 
@@ -76,6 +86,7 @@ func collectResult(
 			LeaseDuration:     productionLeaseDuration,
 			SlowDelay:         opts.cfg.SlowDelay,
 			TransientFailures: opts.cfg.TransientFailures,
+			OutageDuration:    opts.cfg.OutageDuration,
 			Database:          opts.dbName,
 		},
 		Environment: environmentInfo{
@@ -87,7 +98,8 @@ func collectResult(
 			FinishedAt: finishedAt,
 		},
 		Timing: timingResult{
-			DrainSeconds: drainSeconds,
+			DrainSeconds:         drainSeconds,
+			RecoveryDrainSeconds: recoverySeconds,
 		},
 		Throughput: throughputResult{
 			SuccessfulPerSecond: float64(successful) / drainSeconds,
@@ -230,10 +242,6 @@ func readAttemptDistribution(
 // readRetryGaps returns the gap in milliseconds between consecutive
 // attempts of the same delivery. Requires at least two attempts on a
 // delivery to produce a sample.
-//
-// Attempts are keyed by event_id, and the delivery's event_id ties
-// them together. Each event maps to exactly one delivery in the
-// benchmark schema.
 func readRetryGaps(
 	ctx context.Context,
 	attemptsCol *mongo.Collection,
@@ -325,8 +333,6 @@ func readQueueLatencies(
 			)
 		}
 
-		// Attempts are keyed by event_id, not delivery_id. Fetch the
-		// earliest attempt for this delivery's event.
 		var attemptRow struct {
 			StartedAt time.Time `bson:"started_at"`
 		}
