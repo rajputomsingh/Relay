@@ -125,6 +125,7 @@ func runSingle(
 		cfg.Behavior,
 		cfg.SlowDelay,
 		cfg.TransientFailures,
+		cfg.OutageDuration,
 	)
 	defer server.Close()
 
