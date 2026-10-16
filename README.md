@@ -57,6 +57,7 @@ Relay validates and persists incoming events before processing downstream delive
     width="100%"
   />
 </p>
+
 ## Technology Stack
 
 | Component       | Technology                                                                                                                       |
