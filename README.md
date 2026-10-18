@@ -17,6 +17,9 @@
   <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB" />
 </p>
 
+> **Release status:** The latest published release shown in GitHub is **v0.4.0 - Multi-Endpoint Delivery**.
+> `main` contains subsequent development, including per-endpoint rate limiting and the v0.9.0 load, capacity, and recovery validation milestone. These later capabilities are present on `main` but are not part of the v0.4.0 release artifact.
+
 ## Overview
 
 Webhook delivery is a distributed systems problem. Network failures, unavailable endpoints, duplicate requests, and ambiguous delivery outcomes make reliable event propagation difficult to implement independently in every application.
@@ -35,16 +38,25 @@ The system is designed to separate event ingestion from delivery execution while
   />
 </p>
 
+The flow is: **event ingestion → persistent storage → endpoint matching → delivery workers → retries with attempt history → replay**. Attempts, retries, and endpoint state are all persisted in MongoDB so that the delivery engine can recover its position after a restart.
+
 ### Core Capabilities
 
 - **Ingestion:** Authenticated JSON event ingestion over HTTP.
 - **Idempotency:** Duplicate-submission protection through idempotency keys.
 - **Persistence:** MongoDB storage for events and delivery-attempt history.
 - **Delivery:** Asynchronous webhook delivery through Go workers.
+- **Multi-Endpoint Delivery:** Independent delivery state for each matching endpoint.
 - **Retries:** Exponential backoff with jitter and bounded attempts.
-- **Observability:** Persistent attempt outcomes, durations, HTTP statuses, and errors.
+- **Concurrency Control:** Bounded worker concurrency and backpressure.
+- **Rate Limiting:** Per-endpoint delivery rate controls.
+- **Webhook Signing:** Optional HMAC-SHA256 signatures for outbound requests.
+- **Failure Recovery:** Lease recovery, dead-letter handling, and eligible-event replay.
 - **Replay:** Manual replay of eligible failed events.
+- **Worker Health:** Visibility into delivery execution and operational health.
+- **Observability:** Persistent attempt outcomes, durations, HTTP statuses, and errors.
 - **Operations:** Liveness, database readiness, and graceful shutdown.
+- **Capacity Testing:** Benchmark tooling for concurrency, downstream outages, queue growth, and recovery.
 
 ### Delivery Lifecycle
 
@@ -80,6 +92,8 @@ relay/
 │   ├── database/
 │   ├── delivery/
 │   └── handlers/
+├── bench/
+├── docs/
 ├── .env.example
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -141,6 +155,7 @@ go run ./cmd/relay
 
 ```bash
 go test ./...
+go vet ./...
 go build ./...
 ```
 
@@ -152,6 +167,8 @@ go build ./...
 | `GET`  | `/readyz`                | Database readiness              |
 | `POST` | `/v1/events`             | Submit an authenticated event   |
 | `POST` | `/v1/events/{id}/replay` | Replay an eligible failed event |
+
+See the Multi-Endpoint Delivery section below for endpoint and delivery inspection routes.
 
 ### Submit an event
 
@@ -237,6 +254,16 @@ Each endpoint can define its destination URL, optional HMAC-SHA256 signing secre
 
 Relay creates an independent delivery record for each matching endpoint. A failure at one endpoint should not prevent delivery to other matching endpoints.
 
+### Webhook Signing
+
+Relay can sign outbound webhook requests with HMAC-SHA256. Configure a signing secret of at least 32 characters when required by your deployment:
+
+```dotenv
+RELAY_WEBHOOK_SIGNING_SECRET=replace_with_a_secret_of_at_least_32_characters
+```
+
+Never commit real secrets to version control.
+
 ### Backward Compatibility
 
 `RELAY_WEBHOOK_URL` can be used to bootstrap a default endpoint on first startup when the endpoints collection is empty. After bootstrap, endpoints are managed through the API.
@@ -270,49 +297,55 @@ Relay incorporates bounded retries, persistent event state, idempotency-key enfo
 Deployments should additionally enforce:
 
 - HTTPS for externally accessible endpoints.
+- Endpoint URL validation and SSRF protections for registered endpoints.
 - Strong API keys and credential rotation.
+- Secret rotation procedures for webhook signing secrets.
 - Restricted MongoDB network and database access.
 - Redaction of secrets and sensitive payloads from logs.
 - Idempotent downstream event handlers.
 - Monitoring and alerting for repeated delivery failures.
+- Queue-backlog monitoring and alerting.
+- Restart and graceful-shutdown recovery testing.
 
 API-key authentication alone does not constitute a complete production security model. Deployment-specific access controls and operational safeguards remain necessary.
 
-## Roadmap
+## Benchmarks
 
-- [ ] Expand automated integration and failure-path testing.
-- [ ] Add a delivery-attempt query API.
-- [ ] Introduce structured metrics and alerting.
-- [ ] Add dead-letter handling for exhausted deliveries.
-- [ ] Introduce tenant isolation and per-tenant access controls.
-- [ ] Develop a dashboard for event inspection and replay.
-- [ ] Document production deployment and operations.
+Relay includes a benchmark harness for evaluating sustained delivery load, worker concurrency, downstream failures, outage recovery, and queue growth.
+
+See [docs/benchmarks.md](docs/benchmarks.md) for the test methodology, environment details, timing boundaries, and recorded results.
+
+Benchmark results depend on the workload, machine configuration, MongoDB deployment, and worker settings. They should be treated as measurements of the tested environment, not universal production-capacity guarantees.
+
+## Project Status and Roadmap
+
+Relay's core delivery capabilities include authenticated event ingestion, idempotency, multi-endpoint delivery, retry handling, delivery inspection, replay, and operational observability.
+
+The latest published release shown in GitHub is **v0.4.0 - Multi-Endpoint Delivery**. The `main` branch contains subsequent development, including per-endpoint rate limiting and the v0.9.0 load, capacity, and recovery validation milestone.
+
+### Next Priorities
+
+- Complete a production-focused security review, including endpoint URL validation and SSRF protection.
+- Expand end-to-end integration and failure-recovery tests.
+- Document deployment, configuration, secret rotation, and operational procedures.
+- Establish release automation and repeatable release validation.
+- Evaluate tenant isolation and per-tenant authorization before supporting multi-tenant deployments.
+- Evaluate a dashboard for event inspection, delivery monitoring, and replay.
+
+These priorities are forward-looking; they should not be interpreted as proof that the listed work is already implemented.
 
 ## Contributing
 
 Contributions and bug reports are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
 
-Run the test suite and build before proposing changes:
+Run the test suite, vet, and build before proposing changes:
 
 ```bash
 go test ./...
+go vet ./...
 go build ./...
 ```
 
 ## License
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
-
----
-
-Relay is an open-source foundation for reliable webhook delivery and event processing.
-
-## Webhook Signing
-
-Relay can sign outbound webhook requests with HMAC-SHA256. Configure a signing secret of at least 32 characters when required by your deployment:
-
-```dotenv
-RELAY_WEBHOOK_SIGNING_SECRET=replace_with_a_secret_of_at_least_32_characters
-```
-
-Never commit real secrets to version control.
