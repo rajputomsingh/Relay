@@ -27,21 +27,26 @@ jobs:
       - run:
           name: Check Go formatting
           command: |
-            set -e
-            unformatted=$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)
-
-            if [ -n "$unformatted" ]; then
+            echo "Running gofmt check..."
+            echo "Working directory: $(pwd)"
+            echo "Go files found:"
+            find . -type f -name '*.go' -not -path './vendor/*'
+            echo "---"
+            echo "Running gofmt -l..."
+            UNFORMATTED=$(find . -type f -name '*.go' -not -path './vendor/*' -exec gofmt -l {} +)
+            FMT_STATUS=$?
+            echo "gofmt exit status: $FMT_STATUS"
+            echo "---"
+            if [ -n "$UNFORMATTED" ]; then
               echo "The following Go files need formatting:"
-              printf '%s\n' "$unformatted"
+              echo "$UNFORMATTED"
               exit 1
             fi
-
             echo "All Go files are properly formatted."
 
       - run:
           name: Wait for MongoDB
           command: |
-            set -e
             for i in $(seq 1 30); do
               if (echo > /dev/tcp/mongo/27017) >/dev/null 2>&1; then
                 echo "MongoDB is accepting connections."
