@@ -1,3 +1,4 @@
+
 version: 2.1
 
 jobs:
@@ -7,6 +8,7 @@ jobs:
       - image: mongo:8.0
     environment:
       MONGODB_TEST_URI: mongodb://mongo:27017
+
     steps:
       - checkout
 
@@ -27,12 +29,16 @@ jobs:
       - run:
           name: Check Go formatting
           command: |
-            unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
+            set -e
+            unformatted=$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)
+
             if [ -n "$unformatted" ]; then
-              echo "These files need gofmt:"
-              echo "$unformatted"
+              echo "The following Go files need formatting:"
+              printf '%s\n' "$unformatted"
               exit 1
             fi
+
+            echo "All Go files are properly formatted."
 
       - run:
           name: Run tests
