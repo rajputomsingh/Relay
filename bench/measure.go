@@ -20,6 +20,7 @@ func collectResult(
 	opts runnerOptions,
 	startedAt, finishedAt time.Time,
 	drainSeconds float64,
+	pendingSamples []int64,
 ) (runResult, error) {
 	deliveriesCol := opts.database.Collection("deliveries")
 	attemptsCol := opts.database.Collection("delivery_attempts")
@@ -73,6 +74,7 @@ func collectResult(
 
 	serverSnap := opts.server.snapshot()
 	httpDurations := opts.server.durationSnapshot()
+	mongoMetrics := collectMongoStatus(ctx, opts.database)
 
 	result := runResult{
 		Config: runConfig{
@@ -135,6 +137,10 @@ func collectResult(
 			ToDeliveredP99MS:    percentileMS(queueToDelivered, 0.99),
 			RetryGapP50MS:       percentileMS(retryGaps, 0.50),
 			RetryGapP95MS:       percentileMS(retryGaps, 0.95),
+			QueueGrowthMax:      maxInt64(pendingSamples),
+			QueueGrowthP50:      percentileMS(pendingSamples, 0.50),
+			QueueGrowthP95:      percentileMS(pendingSamples, 0.95),
+			QueueSamples:        len(pendingSamples),
 		},
 		Final: final,
 		Server: serverStats{
@@ -143,13 +149,91 @@ func collectResult(
 			Failures:      serverSnap.Failures,
 			TransientHits: serverSnap.TransientHits,
 		},
-		Mongo: mongoStats{
-			Available: false,
-			Reason:    "not collected",
-		},
+		Mongo: mongoMetrics,
 	}
 
 	return result, nil
+}
+
+// numeric coerces any BSON numeric value to int64. The mongo-driver
+// decodes serverStatus counters differently depending on the server
+// version and BSON wire format; the concrete Go type can be int32,
+// int64, or float64.
+func numeric(v any) int64 {
+	switch n := v.(type) {
+	case int32:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
+// collectMongoStatus reads serverStatus counters that indicate whether
+// MongoDB is the throughput bottleneck. Returns an unavailable
+// mongoStats if the server does not grant permission or the command
+// fails.
+func collectMongoStatus(
+	ctx context.Context,
+	db *mongo.Database,
+) mongoStats {
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var result bson.M
+	err := db.Client().Database("admin").RunCommand(cmdCtx, bson.D{
+		{Key: "serverStatus", Value: 1},
+	}).Decode(&result)
+	if err != nil {
+		return mongoStats{
+			Available: false,
+			Reason:    err.Error(),
+		}
+	}
+
+	stats := mongoStats{Available: true}
+
+	if version, ok := result["version"].(string); ok {
+		stats.Version = version
+	}
+
+	// opcounters and connections are embedded documents. The driver
+	// decodes embedded documents as bson.D when the parent is bson.M.
+	if ops, ok := result["opcounters"].(bson.D); ok {
+		for _, elem := range ops {
+			switch elem.Key {
+			case "insert":
+				stats.OpcountersInsert = numeric(elem.Value)
+			case "query":
+				stats.OpcountersQuery = numeric(elem.Value)
+			case "update":
+				stats.OpcountersUpdate = numeric(elem.Value)
+			}
+		}
+	}
+
+	if conns, ok := result["connections"].(bson.D); ok {
+		for _, elem := range conns {
+			if elem.Key == "current" {
+				stats.ConnectionsCurrent = int(numeric(elem.Value))
+			}
+		}
+	}
+
+	return stats
+}
+
+// maxInt64 returns the largest value in xs, or zero for an empty slice.
+func maxInt64(xs []int64) int64 {
+	var m int64
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
 }
 
 // finalStatusCounts returns counts of each delivery status.
@@ -205,8 +289,7 @@ func readAttemptDurations(
 // attempt number.
 //
 // Example: {1: 200, 2: 200, 3: 50} means 200 deliveries made at least
-// one attempt, 200 made at least two, and 50 made three. The shape of
-// this map shows how far into the retry budget deliveries went.
+// one attempt, 200 made at least two, and 50 made three.
 func readAttemptDistribution(
 	ctx context.Context,
 	attemptsCol *mongo.Collection,
@@ -240,8 +323,7 @@ func readAttemptDistribution(
 }
 
 // readRetryGaps returns the gap in milliseconds between consecutive
-// attempts of the same delivery. Requires at least two attempts on a
-// delivery to produce a sample.
+// attempts of the same delivery.
 func readRetryGaps(
 	ctx context.Context,
 	attemptsCol *mongo.Collection,
@@ -286,10 +368,6 @@ func readRetryGaps(
 //     created_at.
 //   - toDelivered: delivery's delivered_at minus delivery's
 //     created_at.
-//
-// Deliveries without delivered_at are excluded from toDelivered.
-// Deliveries without a recorded attempt are excluded from
-// toFirstAttempt.
 func readQueueLatencies(
 	ctx context.Context,
 	deliveriesCol *mongo.Collection,
@@ -358,7 +436,6 @@ func readQueueLatencies(
 }
 
 // percentileMS returns the p-th percentile of samples in milliseconds.
-// samples need not be sorted.
 func percentileMS(samples []int64, p float64) float64 {
 	if len(samples) == 0 {
 		return 0

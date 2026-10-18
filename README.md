@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img width="120" height="120" src="https://github.com/user-attachments/assets/099d8010-9f89-4536-b7b1-392d1667be3c" alt="Relay logo" />
 </p>
 
@@ -299,7 +299,7 @@ Sustained-load results excerpt:
 | slow     |          32 |       136 |                 36.8 |
 
 Throughput plateaus at concurrency 8; doubling to 16 adds 12%, doubling to 32 adds 10%. MongoDB was not the bottleneck — connections stayed well under the driver pool of 100 and insert/query/update counts matched the expected workload shape. The ceiling is CPU-bound work in the worker process.
-
+oc
 Measurement boundaries: single host, harness poll interval 200ms (faster than the production default of 2s), throughput counts terminal outcomes, drain measured from first submission to last terminal outcome.
 
 ## Known Limitations
