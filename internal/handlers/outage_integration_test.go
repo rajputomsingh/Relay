@@ -122,6 +122,7 @@ func waitForMongoUnreachable(
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
+	lastErr := error(nil)
 
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(
@@ -133,12 +134,18 @@ func waitForMongoUnreachable(
 		if err != nil {
 			return
 		}
+		lastErr = err
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	t.Fatalf(
-		"MongoDB remained reachable after %s; expected outage",
+		"MongoDB remained reachable after %s; expected outage. "+
+			"Make sure MONGODB_TEST_URI points at the container named "+
+			"by MONGODB_TEST_CONTAINER (%q), not at a different MongoDB "+
+			"instance. last error: %v",
 		timeout,
+		os.Getenv("MONGODB_TEST_CONTAINER"),
+		lastErr,
 	)
 }
 
@@ -150,11 +157,21 @@ func TestHandlerRecoversFromMongoOutage(t *testing.T) {
 		t.Skip("set MONGODB_TEST_URI to run MongoDB outage tests")
 	}
 
+	// The outage test requires direct control over the container that
+	// serves MONGODB_TEST_URI. This is only possible when the operator
+	// explicitly names the container via MONGODB_TEST_CONTAINER. In
+	// CI, MongoDB runs as a CircleCI-managed service container that
+	// the test process cannot stop, so this variable is unset and the
+	// test skips cleanly.
 	container := strings.TrimSpace(
 		os.Getenv("MONGODB_TEST_CONTAINER"),
 	)
 	if container == "" {
-		container = "relay-mongo"
+		t.Skip(
+			"MONGODB_TEST_CONTAINER not set; skipping outage recovery " +
+				"test (requires the ability to stop the container " +
+				"serving MONGODB_TEST_URI)",
+		)
 	}
 	requireContainer(t, container)
 
