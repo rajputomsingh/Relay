@@ -6,7 +6,7 @@ jobs:
       - image: cimg/go:1.27.0
       - image: mongo:7.0
     environment:
-      MONGODB_TEST_URI: mongodb://mongo:27017
+      MONGODB_TEST_URI: mongodb://localhost:27017
     steps:
       - checkout
 
@@ -28,14 +28,28 @@ jobs:
           name: Wait for MongoDB
           shell: /bin/bash
           command: |
-            for i in $(seq 1 30); do
-              if (echo > /dev/tcp/mongo/27017) >/dev/null 2>&1; then
-                echo "MongoDB ready."
+            echo "=== Network diagnosis ==="
+            echo "Primary container hostname: $(hostname)"
+            echo "Resolving mongo:"
+            getent hosts mongo || echo "  mongo does not resolve"
+            echo "Resolving localhost:"
+            getent hosts localhost || echo "  localhost does not resolve"
+            echo "Testing connectivity:"
+            echo "  mongo:27017 -> $(timeout 2 bash -c "</dev/tcp/mongo/27017" 2>&1 && echo OK || echo FAIL)"
+            echo "  localhost:27017 -> $(timeout 2 bash -c "</dev/tcp/localhost/27017" 2>&1 && echo OK || echo FAIL)"
+            echo "  127.0.0.1:27017 -> $(timeout 2 bash -c "</dev/tcp/127.0.0.1/27017" 2>&1 && echo OK || echo FAIL)"
+            echo "=== Waiting ==="
+            for i in $(seq 1 60); do
+              if (echo > /dev/tcp/localhost/27017) >/dev/null 2>&1; then
+                echo "MongoDB accepting connections on localhost:27017 after $i seconds"
                 exit 0
               fi
-              echo "Waiting for MongoDB ($i/30)"
+              if [ $((i % 10)) -eq 0 ]; then
+                echo "  still waiting... ($i/60)"
+              fi
               sleep 1
             done
+            echo "MongoDB did not become available within 60s"
             exit 1
 
       - run:
