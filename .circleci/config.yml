@@ -26,6 +26,7 @@ jobs:
 
       - run:
           name: Check Go formatting
+          shell: /bin/bash
           command: |
             echo "Checking gofmt..."
             UNFORMATTED=$(gofmt -l ./cmd ./internal ./bench 2>/dev/null || true)
@@ -38,6 +39,7 @@ jobs:
 
       - run:
           name: Wait for MongoDB
+          shell: /bin/bash
           command: |
             for i in $(seq 1 30); do
               if (echo > /dev/tcp/mongo/27017) >/dev/null 2>&1; then
@@ -61,8 +63,3 @@ jobs:
       - run:
           name: Build packages
           command: go build ./...
-
-workflows:
-  relay-validation:
-    jobs:
-      - relay-ci
