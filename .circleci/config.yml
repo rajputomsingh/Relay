@@ -1,0 +1,52 @@
+version: 2.1
+
+jobs:
+  relay-ci:
+    docker:
+      - image: cimg/go:1.27.0
+      - image: mongo:8.0
+    environment:
+      MONGODB_TEST_URI: mongodb://mongo:27017
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+            - go-mod-v1-
+
+      - run:
+          name: Download Go modules
+          command: go mod download
+
+      - save_cache:
+          key: go-mod-v1-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+
+      - run:
+          name: Check Go formatting
+          command: |
+            unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
+            if [ -n "$unformatted" ]; then
+              echo "These files need gofmt:"
+              echo "$unformatted"
+              exit 1
+            fi
+
+      - run:
+          name: Run tests
+          command: go test -v ./...
+
+      - run:
+          name: Run go vet
+          command: go vet ./...
+
+      - run:
+          name: Build packages
+          command: go build ./...
+
+workflows:
+  relay-validation:
+    jobs:
+      - relay-ci
