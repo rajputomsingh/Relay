@@ -1,40 +1,50 @@
-﻿    # Relay v0.4.0 - Multi-Endpoint Delivery
+# Relay v0.4.0 - Multi-Endpoint Delivery
 
-    ## Highlights
+## Highlights
 
-    - Introduced multi-endpoint webhook delivery, allowing accepted events to be distributed to multiple configured destinations.
-    - Added endpoint management APIs for registering, listing, updating, and disabling webhook destinations.
-    - Implemented event filtering to route events to matching, enabled endpoints.
-    - Added independent delivery state, retry limits, and attempt history for each endpoint.
-    - Introduced per-endpoint HMAC-SHA256 webhook signing.
-    - Added persistent delivery tracking with lease-based concurrency protection.
-    - Preserved backward compatibility through automatic default-endpoint initialization.
+- **Multi-endpoint delivery:** Deliver events to multiple registered endpoints, with independent delivery state for each endpoint.
+- **Endpoint management:** Configure endpoints and route events using supported event filters.
+- **Webhook signing:** Support outbound HMAC-SHA256 signatures for request authenticity.
+- **Delivery inspection:** Inspect event delivery status and individual delivery attempts.
+- **Retry and recovery:** Handle transient delivery failures through retries and worker recovery.
+- **Dead-letter handling:** Support inspection and replay workflows for eligible failed deliveries.
+- **Observability:** Improve visibility into delivery attempts, worker health, and operational state.
 
-    ## Reliability & Security
+## Core Platform
 
-    - Exponential backoff with jitter and bounded delivery attempts.
-    - Atomic delivery claims and lease-token fencing to prevent stale workers from overwriting delivery state.
-    - Endpoint-specific signing secrets for authenticating outbound webhook requests.
-    - Persistent attempt history for debugging and delivery inspection.
-    - Idempotent delivery creation using unique event-to-endpoint records.
+Relay is a webhook delivery service built with Go and MongoDB. It accepts authenticated events over HTTP, persists event and delivery state, and processes matching deliveries asynchronously.
 
-    ## Validation
+Idempotency, retry handling, delivery inspection, and replay workflows help applications manage downstream delivery failures.
 
-    Run the following commands to validate the project:
+## Validation
 
-    ```bash
-    go test ./...
-    go vet ./...
-    go build ./...
-    ```
+The following checks are used to validate the project:
 
-    ## Core Platform
+```bash
+go test ./...
+go vet ./...
+go build ./...
+```
 
-    Relay is a webhook delivery engine built with Go and MongoDB. It provides authenticated event ingestion, idempotent persistence, asynchronous delivery, automatic retries, multi-endpoint fan-out, delivery inspection, and event replay.
+## Configuration and Security
 
-    For implementation details, see [Multi-Endpoint Delivery](docs/multi-endpoint-delivery.md).
+- Configure environment variables using `.env.example`.
+- Keep API keys, MongoDB credentials, and webhook signing secrets out of source control.
+- Configure endpoint destinations carefully and use HTTPS in production.
+- Verify endpoint configuration and signing behavior in a staging environment before deployment.
 
-    ---
+## Compatibility and Release Scope
 
-    **Release:** v0.4.0  
-    **Focus:** Multi-endpoint delivery infrastructure
+This document describes **v0.4.0 - Multi-Endpoint Delivery**.
+
+The `main` branch contains subsequent development, including per-endpoint rate limiting and the v0.9.0 load, capacity, and recovery validation milestone. These later changes are not automatically included in the v0.4.0 release artifact.
+
+For reproducible deployments, use the source associated with the intended release tag.
+
+## Upgrade Notes
+
+1. Review `.env.example` for the configuration expected by the version being deployed.
+2. Configure MongoDB connectivity and the required API authentication settings.
+3. Review endpoint destinations, event filters, and webhook signing configuration.
+4. Run the validation commands against the release source.
+5. Test delivery, retry, and recovery behavior in staging before production deployment.
