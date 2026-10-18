@@ -1,4 +1,3 @@
-
 version: 2.1
 
 jobs:
@@ -8,7 +7,6 @@ jobs:
       - image: mongo:8.0
     environment:
       MONGODB_TEST_URI: mongodb://mongo:27017
-
     steps:
       - checkout
 
@@ -39,6 +37,21 @@ jobs:
             fi
 
             echo "All Go files are properly formatted."
+
+      - run:
+          name: Wait for MongoDB
+          command: |
+            set -e
+            for i in $(seq 1 30); do
+              if (echo > /dev/tcp/mongo/27017) >/dev/null 2>&1; then
+                echo "MongoDB is accepting connections."
+                exit 0
+              fi
+              echo "Waiting for MongoDB... ($i/30)"
+              sleep 1
+            done
+            echo "MongoDB did not become available within 30 seconds."
+            exit 1
 
       - run:
           name: Run tests
