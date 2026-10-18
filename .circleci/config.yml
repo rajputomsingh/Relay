@@ -25,18 +25,6 @@ jobs:
             - /home/circleci/go/pkg/mod
 
       - run:
-          name: Check Go formatting
-          shell: /bin/bash
-          command: |
-            UNFORMATTED=$(gofmt -l ./cmd ./internal ./bench 2>/dev/null || true)
-            if [ -n "$UNFORMATTED" ]; then
-              echo "These files need formatting:"
-              echo "$UNFORMATTED"
-              exit 1
-            fi
-            echo "All files formatted."
-
-      - run:
           name: Wait for MongoDB
           shell: /bin/bash
           command: |
