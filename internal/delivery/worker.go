@@ -523,12 +523,24 @@ func (w *Worker) processOne(ctx context.Context) error {
 		req.Header.Set(security.SignatureHeader, signature)
 	}
 
+	// Instrument the outbound request.
+	start := time.Now()
 	resp, err := w.client.Do(req)
+	duration := time.Since(start).Seconds()
+	deliveryDuration.WithLabelValues(delivery.EndpointID.Hex()).Observe(duration)
+
 	if err != nil {
 		attemptErr = err
+		deliveryAttempts.WithLabelValues(delivery.EndpointID.Hex(), "error").Inc()
 		return w.recordFailure(ctx, delivery, err.Error())
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		deliveryAttempts.WithLabelValues(delivery.EndpointID.Hex(), "success").Inc()
+	} else {
+		deliveryAttempts.WithLabelValues(delivery.EndpointID.Hex(), "failed").Inc()
+	}
 
 	httpStatus = resp.StatusCode
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
