@@ -1,0 +1,15 @@
+.git
+.github
+.circleci
+.vscode
+bench/results
+*.log
+.env
+.env.*
+!.env.example
+docs
+README.md
+LICENSE
+docker-compose*.yml
+Dockerfile
+.dockerignore

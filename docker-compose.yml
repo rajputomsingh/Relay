@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: relay-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  relay:
+    build: .
+    container_name: relay-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=production
+      - PORT=8080
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DATABASE=relay
+      - RELAY_API_KEY=${RELAY_API_KEY:-dev-secret-api-key}
+      - RELAY_WORKER_POLL_SECONDS=2
+      - RELAY_MAX_DELIVERY_ATTEMPTS=8
+      - RELAY_WORKER_CONCURRENCY=4
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+volumes:
+  mongo_data:
