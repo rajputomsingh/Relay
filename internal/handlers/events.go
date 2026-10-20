@@ -12,6 +12,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	
 )
 
 const maxEventBody = 1 << 20
@@ -55,6 +56,19 @@ func (h *EventsHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/events/", h.replay)
 }
 
+// create godoc
+// @Summary      Submit an event
+// @Description  Ingests an event and enqueues it for delivery.
+// @Tags         events
+// @Accept       json
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        Idempotency-Key header string true "Client-generated idempotency key"
+// @Param        event body createEventRequest true "Event payload"
+// @Success      202  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Router       /v1/events [post]
 func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeEventJSON(w, http.StatusMethodNotAllowed, map[string]any{

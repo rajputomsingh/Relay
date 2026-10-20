@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,260 +10,90 @@ import (
 	"syscall"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+
 	"github.com/rajputomsingh/relay/internal/config"
-	"github.com/rajputomsingh/relay/internal/database"
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	_ "github.com/rajputomsingh/relay/docs"
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
+// @title Relay API
+// @version 1.0
+// @description Reliable webhook delivery infrastructure.
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name Relay Support
+// @contact.url https://github.com/rajputomsingh/Relay
+
+// @license.name Apache 2.0
+// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host localhost:8080
+// @BasePath /
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name Authorization
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(
-		os.Stdout,
-		&slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		},
-	)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
 
-	if err := run(); err != nil {
-		slog.Error(
-			"relay stopped",
-			"error", err.Error(),
-			"error_type", fmt.Sprintf("%T", err),
-		)
-		os.Exit(1)
-	}
-}
-
-func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
 	}
 
-	startupCtx, cancelStartup := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	client, err := database.Connect(startupCtx, cfg.MongoURI)
-	cancelStartup()
+	// Connect to MongoDB
+	connectCtx, connectCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer connectCancel()
 
+	client, err := mongo.Connect(options.Client().ApplyURI(cfg.MongoURI))
 	if err != nil {
-		return fmt.Errorf("MongoDB initialization failed: %w", err)
+		slog.Error("failed to initialize mongo client", "error", err)
+		os.Exit(1)
 	}
+	defer client.Disconnect(context.Background())
 
-	defer func() {
-		ctx, cancel := context.WithTimeout(
-			context.Background(),
-			5*time.Second,
-		)
-		defer cancel()
-
-		if err := client.Disconnect(ctx); err != nil {
-			slog.Error(
-				"MongoDB disconnect failed",
-				"error_type", fmt.Sprintf("%T", err),
-			)
-		}
-	}()
+	if err := client.Ping(connectCtx, readpref.Primary()); err != nil {
+		slog.Error("failed to ping mongo", "error", err)
+		os.Exit(1)
+	}
 
 	db := client.Database(cfg.MongoDatabase)
-
 	eventsCollection := db.Collection("events")
-	attemptsCollection := db.Collection("delivery_attempts")
 	endpointsCollection := db.Collection("endpoints")
 	deliveriesCollection := db.Collection("deliveries")
+	attemptsCollection := db.Collection("delivery_attempts")
 
-	// Create the unique idempotency index.
-	indexCtx, cancelIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = eventsCollection.Indexes().CreateOne(
-		indexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "idempotency_key", Value: 1},
-			},
-			Options: options.Index().
-				SetUnique(true).
-				SetName("uniq_event_idempotency_key"),
-		},
-	)
-	cancelIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize idempotency index")
-	}
-
-	// Create indexes used by the delivery worker.
-	deliveryIndexCtx, cancelDeliveryIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = eventsCollection.Indexes().CreateMany(
-		deliveryIndexCtx,
-		[]mongo.IndexModel{
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "next_attempt_at", Value: 1},
-					{Key: "received_at", Value: 1},
-				},
-				Options: options.Index().
-					SetName("idx_delivery_due"),
-			},
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "lease_until", Value: 1},
-				},
-				Options: options.Index().
-					SetName("idx_delivery_lease"),
-			},
-		},
-	)
-	cancelDeliveryIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize delivery indexes")
-	}
-
-	// Indexes for event listing and stable cursor pagination.
-	listingIndexCtx, cancelListingIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = eventsCollection.Indexes().CreateMany(
-		listingIndexCtx,
-		[]mongo.IndexModel{
-			{
-				Keys: bson.D{
-					{Key: "received_at", Value: -1},
-					{Key: "_id", Value: -1},
-				},
-				Options: options.Index().
-					SetName("idx_events_received_id"),
-			},
-			{
-				Keys: bson.D{
-					{Key: "delivery_status", Value: 1},
-					{Key: "received_at", Value: -1},
-					{Key: "_id", Value: -1},
-				},
-				Options: options.Index().
-					SetName("idx_events_status_received_id"),
-			},
-		},
-	)
-	cancelListingIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize event listing indexes")
-	}
-
-	// Index for querying attempts by event and time.
-	attemptIndexCtx, cancelAttemptIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = attemptsCollection.Indexes().CreateOne(
-		attemptIndexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "event_id", Value: 1},
-				{Key: "started_at", Value: -1},
-			},
-			Options: options.Index().
-				SetName("idx_attempts_event_started"),
-		},
-	)
-	cancelAttemptIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize delivery attempt indexes")
-	}
-
-	// Compound index for stable cursor-based attempt pagination.
-	paginationIndexCtx, cancelPaginationIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	_, err = attemptsCollection.Indexes().CreateOne(
-		paginationIndexCtx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "event_id", Value: 1},
-				{Key: "started_at", Value: -1},
-				{Key: "_id", Value: -1},
-			},
-			Options: options.Index().
-				SetName("idx_attempts_event_started_id"),
-		},
-	)
-	cancelPaginationIndex()
-
-	if err != nil {
-		return errors.New("failed to initialize attempt pagination index")
-	}
-
-	// Create indexes for the endpoints and deliveries collections.
-	multiIndexCtx, cancelMultiIndex := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	err = database.EnsureMultiEndpointIndexes(multiIndexCtx, db)
-	cancelMultiIndex()
-
-	if err != nil {
-		return fmt.Errorf("failed to initialize multi-endpoint indexes: %w", err)
-	}
-
-	// Bootstrap a default endpoint when a legacy webhook URL is
-	// configured and no endpoints exist yet.
 	endpointStore := endpoints.NewStore(endpointsCollection)
-
-	if err := endpoints.EnsureDefaultEndpoint(
-		context.Background(),
-		endpointStore,
-		endpoints.BootstrapConfig{
-			URL:           cfg.WebhookURL,
-			SigningSecret: cfg.WebhookSigningSecret,
-			MaxAttempts:   cfg.MaxDeliveryAttempts,
-			RateLimitRPS:  0,
-		},
-	); err != nil {
-		return fmt.Errorf("endpoint bootstrap failed: %w", err)
-	}
-
-	// Construct the delivery worker before registering handlers so
-	// the metrics handler can read the worker's health signals.
+    
+	// Construct the delivery worker
 	worker := delivery.NewWorker(
 		eventsCollection,
 		endpointsCollection,
 		deliveriesCollection,
 		attemptsCollection,
 		delivery.Config{
-			PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
-			RequestTimeout: 10 * time.Second,
-			LeaseDuration:  30 * time.Second,
-			Concurrency:    cfg.WorkerConcurrency,
 			Logger:         slog.Default(),
+			Concurrency:    cfg.WorkerConcurrency,
+			RequestTimeout: 10 * time.Second,
 		},
 	)
 
 	// Register HTTP handlers.
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)
 
 	healthHandler := handlers.NewHealthHandler(client)
 	healthHandler.Register(mux)
@@ -273,7 +102,7 @@ func run() error {
 		eventsCollection,
 		endpointsCollection,
 		deliveriesCollection,
-		nil,
+		slog.Default(),
 	)
 
 	eventsHandler := handlers.NewEventsHandler(
@@ -316,71 +145,31 @@ func run() error {
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	stopCtx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
-	defer stop()
+	// Start the delivery worker loop
+	go worker.Run(ctx)
 
-	workerDone := make(chan struct{})
-
+	// Start the HTTP server
 	go func() {
-		defer close(workerDone)
-		worker.Run(stopCtx)
+		slog.Info("starting HTTP server", "port", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("http server error", "error", err)
+			cancel()
+		}
 	}()
 
-	slog.Info(
-		"multi-endpoint delivery worker started",
-		"concurrency", cfg.WorkerConcurrency,
-	)
+	<-ctx.Done()
+	slog.Info("shutting down gracefully...")
 
-	serverErrors := make(chan error, 1)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 
-	go func() {
-		slog.Info(
-			"relay starting",
-			"environment", cfg.Environment,
-			"port", cfg.Port,
-		)
-		serverErrors <- server.ListenAndServe()
-	}()
-
-	select {
-	case err := <-serverErrors:
-		stop()
-		<-workerDone
-
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-
-		return fmt.Errorf("HTTP server failed: %w", err)
-
-	case <-stopCtx.Done():
-		slog.Info("shutdown signal received")
-
-		shutdownCtx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			_ = server.Close()
-			stop()
-			<-workerDone
-			return errors.New("HTTP server shutdown timed out")
-		}
-
-		stop()
-		<-workerDone
-
-		slog.Info("HTTP server shut down gracefully")
-		return nil
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("graceful shutdown failed", "error", err)
 	}
+
+	slog.Info("shutdown complete")
 }
