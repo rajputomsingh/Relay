@@ -29,6 +29,13 @@ func (h *HealthHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/readyz", h.readiness)
 }
 
+// liveness godoc
+// @Summary      Liveness probe
+// @Description  Returns 200 if the service is running.
+// @Tags         health
+// @Produce      json
+// @Success      200  {object}  map[string]string
+// @Router       /healthz [get]
 func (h *HealthHandler) liveness(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{

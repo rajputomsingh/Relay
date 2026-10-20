@@ -1,0 +1,88 @@
+basePath: /
+definitions:
+  handlers.createEventRequest:
+    properties:
+      data:
+        additionalProperties: {}
+        type: object
+      event_type:
+        type: string
+      source:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: Relay Support
+    url: https://github.com/rajputomsingh/Relay
+  description: Reliable webhook delivery infrastructure.
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Relay API
+  version: "1.0"
+paths:
+  /healthz:
+    get:
+      description: Returns 200 if the service is running.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - health
+  /v1/events:
+    post:
+      consumes:
+      - application/json
+      description: Ingests an event and enqueues it for delivery.
+      parameters:
+      - description: Client-generated idempotency key
+        in: header
+        name: Idempotency-Key
+        required: true
+        type: string
+      - description: Event payload
+        in: body
+        name: event
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.createEventRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Submit an event
+      tags:
+      - events
+securityDefinitions:
+  ApiKeyAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
