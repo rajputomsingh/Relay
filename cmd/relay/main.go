@@ -76,7 +76,7 @@ func main() {
 	attemptsCollection := db.Collection("delivery_attempts")
 
 	endpointStore := endpoints.NewStore(endpointsCollection)
-    
+
 	// Construct the delivery worker
 	worker := delivery.NewWorker(
 		eventsCollection,

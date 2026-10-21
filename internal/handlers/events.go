@@ -12,7 +12,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	
 )
 
 const maxEventBody = 1 << 20
