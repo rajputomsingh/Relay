@@ -78,6 +78,8 @@ jobs:
       - image: mongo:7.0
     environment:
       MONGODB_TEST_URI: mongodb://localhost:27017
+      RELAY_API_KEY: "test-key-1234567890-abcdefghijklmnop"
+      APP_ENV: development
     steps:
       - attach_workspace:
           at: .
