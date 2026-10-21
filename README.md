@@ -15,16 +15,31 @@
   <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB" />
 </p>
 
-> **Release status:** The latest published release is **v0.4.0 — Multi-Endpoint Delivery** ([tag](https://github.com/rajputomsingh/relay/releases/tag/v0.4.0)). The `main` branch contains later development, including per-endpoint rate limiting and the v0.9.0 load, capacity, and recovery validation milestone. Those capabilities are on `main` but **not** in the v0.4.0 artifact.
+> **Release status:** The latest published release is **v1.0.0 — Production Ready** ([tag](https://github.com/rajputomsingh/relay/releases/tag/v1.0.0)). The `main` branch tracks stable development.
 
 Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay. Ingestion and delivery are separate stages so the ingest path stays fast and predictable while the delivery engine applies backoff, concurrency limits, and recovery independently.
 
 - **Runtime:** Go
 - **Persistence:** MongoDB 7 (Go Driver v2)
 - **Delivery:** Bounded workers, retries with backoff, per-endpoint state
-- **Operations:** Delivery history, health checks, graceful shutdown, failure recovery
+- **Operations:** Delivery history, health checks, graceful shutdown, Prometheus metrics
+- **API:** Fully documented OpenAPI (Swagger) specification
 
 ## Quick Start
+
+### Docker (Recommended)
+
+The fastest way to get Relay running locally is with Docker Compose:
+
+```bash
+git clone https://github.com/rajputomsingh/relay.git
+cd relay
+make docker-up
+```
+
+_See `docs/deployment.md` for production configuration details._
+
+### Manual Setup
 
 ```bash
 git clone https://github.com/rajputomsingh/relay.git
@@ -85,20 +100,24 @@ Relay is configured entirely through environment variables, read at startup; val
 | `PORT`                         | No       | `8080`        | Valid TCP port                           |
 | `MONGODB_URI`                  | Yes      | —             | Must parse as a MongoDB URI              |
 | `MONGODB_DATABASE`             | No       | `relay`       | Non-empty                                |
-| `RELAY_API_KEY`                | Yes      | —             | Validated for minimum length             |
+| `RELAY_API_KEY`                | Yes      | —             | Validated for minimum length (32 chars)  |
 | `RELAY_WEBHOOK_URL`            | No       | —             | First-run bootstrap only                 |
 | `RELAY_WEBHOOK_SIGNING_SECRET` | No       | —             | If set, at least 32 characters           |
 
 `.env` and files containing credentials must never be committed. In production, source these from a secrets manager.
 
-## API Contract
+## API Contract & Documentation
 
 All `/v1/*` routes require `Authorization: Bearer <RELAY_API_KEY>`.
+
+Relay includes an interactive Swagger UI. When running the server locally, navigate to:
+👉 **http://localhost:8080/swagger/index.html**
 
 | Method   | Endpoint                     | Auth | Purpose                           |
 | -------- | ---------------------------- | ---- | --------------------------------- |
 | `GET`    | `/healthz`                   | No   | Liveness (process running)        |
 | `GET`    | `/readyz`                    | No   | Readiness (MongoDB reachable)     |
+| `GET`    | `/metrics`                   | Yes  | Prometheus metrics endpoint       |
 | `POST`   | `/v1/events`                 | Yes  | Submit an event                   |
 | `POST`   | `/v1/events/{id}/replay`     | Yes  | Replay an eligible failed event   |
 | `POST`   | `/v1/endpoints`              | Yes  | Register an endpoint              |
@@ -108,61 +127,6 @@ All `/v1/*` routes require `Authorization: Bearer <RELAY_API_KEY>`.
 | `DELETE` | `/v1/endpoints/{id}`         | Yes  | Disable an endpoint (soft delete) |
 | `GET`    | `/v1/events/{id}/deliveries` | Yes  | Per-endpoint delivery status      |
 | `GET`    | `/v1/events/{id}/attempts`   | Yes  | Attempt history                   |
-
-Common status codes: `400` malformed request, `401` missing/invalid API key, `404` not found, `409` idempotency or replay conflict, `422` validation failure, `5xx` internal (safe to retry with the same idempotency key). Error responses use:
-
-```json
-{ "error": "invalid_request", "message": "human-readable description" }
-```
-
-**Submit an event**
-
-```http
-POST /v1/events
-Authorization: Bearer YOUR_RELAY_API_KEY
-Content-Type: application/json
-Idempotency-Key: payment-1001
-```
-
-```json
-{
-  "source": "payments-service",
-  "event_type": "payment.completed",
-  "data": { "order_id": "order-1001", "amount": 1499, "currency": "INR" }
-}
-```
-
-Success returns `202 Accepted`:
-
-```json
-{ "id": "01HX7K8QW3M5N2P4R6T8V0Z2X4" }
-```
-
-**Register an endpoint**
-
-```http
-POST /v1/endpoints
-Authorization: Bearer YOUR_RELAY_API_KEY
-Content-Type: application/json
-```
-
-```json
-{
-  "url": "https://example.com/webhooks",
-  "event_filter": {
-    "source": "payments-service",
-    "event_type": "payment.completed"
-  },
-  "signing_secret": "at-least-32-characters-of-entropy-here",
-  "max_attempts": 6
-}
-```
-
-Success returns `201 Created`:
-
-```json
-{ "id": "01HX7M4KJ3P2Q5R8S9T0U1V2W3" }
-```
 
 ## Webhook Signing
 
@@ -202,152 +166,48 @@ function verifyRelaySignature(rawBody, header, secret) {
 }
 ```
 
-**Verify in Python**
-
-```python
-def verify_relay_signature(raw_body: bytes, header: str, secret: bytes) -> bool:
-    if not header:
-        raise ValueError("missing X-Relay-Signature")
-    expected = hmac.new(secret, raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(header, expected)
-```
-
-Notes:
-
-- The signature covers the **raw request body**. Read and verify before any JSON parser touches it, or capture the raw bytes for verification.
-- The current protocol has no timestamp or nonce. Replay protection is downstream responsibility — for example, by rejecting events whose `id` has already been processed.
-- Rotate the secret through your secret manager and update it via `PATCH /v1/endpoints/{id}`.
-
-## Delivery Attempt History
-
-Attempts are stored in the MongoDB `delivery_attempts` collection.
-
-| Field            | Purpose                         |
-| ---------------- | ------------------------------- |
-| `event_id`       | Associated event                |
-| `endpoint_id`    | Associated webhook endpoint     |
-| `attempt_number` | Attempt sequence number         |
-| `started_at`     | Attempt start time              |
-| `finished_at`    | Attempt completion time         |
-| `duration_ms`    | Attempt duration                |
-| `http_status`    | HTTP status when available      |
-| `outcome`        | Delivery outcome                |
-| `error`          | Failure details when applicable |
-
-An index on `event_id` and descending `started_at` supports retrieving recent attempts. Attempt-history write failures are logged separately so they cannot overwrite the primary delivery result.
-
-## Operations
+## Operations & Observability
 
 - **Health.** `/healthz` returns `200` while the process runs. `/readyz` returns `200` only when MongoDB responds to ping.
-- **Shutdown.** On `SIGINT`/`SIGTERM`, Relay stops accepting new requests, drains in-flight deliveries up to the shutdown deadline, then exits. Deliveries cut short by the deadline have their leases expire and are reclaimed.
-- **Lease recovery.** Pending deliveries hold a lease token and expiry. If a worker fails, the lease expires and the delivery is reclaimed; the retry is a new attempt.
-- **Retry policy.** Backoff is `retryDelay(n) = 2s × 2^(n-1) + jitter(0–25%)`, capped per delay and bounded by `max_attempts`. Exhausted attempts move the delivery to a terminal `failed` outcome eligible for manual replay.
-- **Observability.** Persisted attempts and structured logs are the primary surface. A first-class metrics endpoint is on the roadmap. Query `delivery_attempts` and logs for outcome distribution, per-endpoint failure rate, `duration_ms` percentiles, and pending backlog.
-- **Deployment.** Supply `MONGODB_URI`, `MONGODB_DATABASE`, and `RELAY_API_KEY` via a secret manager. Relay creates required indexes on startup. Run under a process supervisor with restart-on-exit and wire health/readiness probes to `/healthz` and `/readyz`.
-
-### Troubleshooting
-
-| Symptom                              | Likely cause                             | Check                                       |
-| ------------------------------------ | ---------------------------------------- | ------------------------------------------- |
-| Backlog grows unboundedly            | Unhealthy downstream or backoff too high | `delivery_attempts` outcomes and `error`    |
-| Deliveries succeed, attempts missing | History-write failure                    | Logs for attempt-history persistence errors |
-| New submissions rejected with `401`  | API key mismatch                         | `RELAY_API_KEY` on both sides               |
-| `/readyz` returns `503`              | MongoDB unreachable                      | `MONGODB_URI`, network reachability         |
-
-## Security Model
-
-**Enforced by Relay:**
-
-- Bearer API-key authentication on `/v1/*`.
-- JSON input validation with explicit rejection of malformed payloads.
-- Idempotency-key enforcement against duplicate submissions.
-- `HMAC-SHA256` outbound signing when a per-endpoint secret is configured.
-- Secret redaction in logs.
-
-**Deployment responsibilities:**
-
-- **Transport security.** HTTPS termination in front of Relay for externally reachable endpoints.
-- **SSRF protection.** Relay stores endpoint URLs as registered. Rejecting private, loopback, and link-local targets — at registration time or via network egress policy — is the operator's responsibility.
-- **Redirects.** Relay does not follow HTTP redirects by default. Apply the same expectation to downstream systems and monitor for DNS rebinding.
-- **Secret rotation.** Rotating `RELAY_API_KEY` and per-endpoint signing secrets is an operational procedure.
-- **MongoDB least privilege.** Relay should run under a role scoped to its own database with restricted network access.
-- **Alerting.** Sustained delivery failure or backlog growth detection is an operator concern until Relay exposes first-class metrics.
-
-API-key authentication alone is not a complete production security model. Deployment-specific controls remain necessary.
+- **Metrics.** `/metrics` exposes Prometheus metrics for outbound delivery duration and delivery attempt outcomes (success/failure).
+- **Shutdown.** On `SIGINT`/`SIGTERM`, Relay stops accepting new requests, drains in-flight deliveries up to the shutdown deadline, then exits.
+- **Lease recovery.** Pending deliveries hold a lease token and expiry. If a worker fails, the lease expires and the delivery is reclaimed.
+- **Retry policy.** Backoff is `retryDelay(n) = 2s × 2^(n-1) + jitter(0–25%)`, capped per delay and bounded by `max_attempts`.
 
 ## Benchmarks
 
 Relay includes a benchmark harness for sustained load, concurrency, failure modes, outage recovery, and queue growth. Full methodology and raw results: [docs/benchmarks.md](docs/benchmarks.md).
 
-All numbers are from a single Windows host with Go 1.27.0 and MongoDB 7 in Docker — measurements of that environment, **not** universal production-capacity claims.
+All numbers are from a single Windows host with Go 1.27.0 and MongoDB 7 in Docker.
 
-| Measurement                 | Result                               |
-| --------------------------- | ------------------------------------ |
-| Workload                    | 5,000 deliveries                     |
-| Highest tested concurrency  | 32                                   |
-| Highest reported throughput | 43.5 deliveries/s                    |
-| Highest-concurrency drain   | 115 s                                |
-| Environment                 | Windows, Go 1.27.0, MongoDB 7 Docker |
-
-Sustained-load results excerpt:
-
-| Behavior | Concurrency | Drain (s) | Throughput (deliv/s) |
-| -------- | ----------: | --------: | -------------------: |
-| fast     |           8 |       142 |                 35.2 |
-| fast     |          16 |       127 |                 39.4 |
-| fast     |          32 |       115 |                 43.5 |
-| slow     |          32 |       136 |                 36.8 |
-
-Throughput plateaus at concurrency 8; doubling to 16 adds 12%, doubling to 32 adds 10%. MongoDB was not the bottleneck — connections stayed well under the driver pool of 100 and insert/query/update counts matched the expected workload shape. The ceiling is CPU-bound work in the worker process.
-oc
-Measurement boundaries: single host, harness poll interval 200ms (faster than the production default of 2s), throughput counts terminal outcomes, drain measured from first submission to last terminal outcome.
+| Measurement                 | Result            |
+| --------------------------- | ----------------- |
+| Workload                    | 5,000 deliveries  |
+| Highest tested concurrency  | 32                |
+| Highest reported throughput | 43.5 deliveries/s |
+| Highest-concurrency drain   | 115 s             |
 
 ## Known Limitations
 
-- No Prometheus/OpenTelemetry metrics endpoint.
-- No tenant isolation or per-tenant authorization.
-- No web UI for event inspection, monitoring, or replay.
-- No published OpenAPI specification.
-- End-to-end suite is not yet automated across every route; handler and delivery-package integration tests exist.
-- No Dockerfile or compose manifest.
+- Metrics currently query MongoDB on scrape. For very high-throughput setups, an in-memory metrics aggregator is recommended.
+- No tenant isolation or per-tenant authorization (single-tenant instance per deployment).
+- No web UI for event inspection, monitoring, or replay (API-only).
+- End-to-end tests spanning the full network stack are not yet automated.
 
 ## Project Status and Roadmap
 
-**In progress**
+**Completed (v1.0.0)**
 
-- Production-focused security review: endpoint URL validation and SSRF guidance.
-- End-to-end integration and failure-recovery test suite.
+- Production-ready Dockerfile & Compose setup.
+- Prometheus metrics instrumentation.
+- OpenAPI (Swagger) interactive documentation.
+- Hardened CI/CD pipeline (CircleCI).
 
-**Planned**
+**Planned (v1.1.0+)**
 
-- Deployment docs, containerization, and operational runbooks.
-- Release automation and repeatable release validation.
-- First-class metrics and alerting surface.
-- Tenant isolation and per-tenant authorization.
+- First-class metrics and alerting dashboards (Grafana).
+- Tenant isolation and multi-tenant authorization.
 - Web dashboard for event inspection and replay.
-
-Tracked under the `v1.0.0 — Production Readiness` milestone. Items marked planned stay that way until verified by code and tests.
-
-## Project Structure
-
-```text
-relay/
-├── cmd/relay/          # entrypoint: config, DB, HTTP server, delivery worker
-├── internal/
-│   ├── config/         # env loading and validation
-│   ├── database/       # MongoDB client, indexes, collections
-│   ├── delivery/       # worker loop, leases, retries, backoff, attempts
-│   ├── endpoints/      # endpoint CRUD and matching
-│   ├── handlers/       # HTTP routing, auth, validation, responses
-│   └── security/       # API key checks, HMAC signing, URL validation
-├── bench/              # benchmark harness
-├── docs/               # methodology and detailed documentation
-├── .env.example
-├── CONTRIBUTING.md
-├── LICENSE
-├── go.mod
-└── README.md
-```
 
 ## Development and Testing
 
@@ -364,8 +224,6 @@ export MONGODB_TEST_URI="mongodb://localhost:27017"
 go test ./internal/delivery -count=1
 ```
 
-If `MONGODB_TEST_URI` is unset or MongoDB is unreachable, these tests skip cleanly rather than fail.
-
 **Full validation gate (before proposing changes):**
 
 ```bash
@@ -374,12 +232,6 @@ go vet ./...
 go build ./...
 git diff --check
 ```
-
-End-to-end tests spanning the full accept → persist → deliver → retry → recover cycle are not yet automated; they are exercised by the benchmark harness and manual verification.
-
-## Contributing
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request. Run the full validation gate above before opening a PR.
 
 ## License
 
