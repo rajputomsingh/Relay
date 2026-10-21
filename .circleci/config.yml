@@ -21,15 +21,14 @@ commands:
           name: Wait for MongoDB
           shell: /bin/bash
           command: |
-            for i in $(seq 1 30); do
+            for i in $(seq 1 60); do
               if (echo > /dev/tcp/localhost/27017) >/dev/null 2>&1; then
                 echo "MongoDB is accepting connections."
                 exit 0
               fi
-              echo "Waiting for MongoDB... ($i/30)"
               sleep 1
             done
-            echo "MongoDB did not become available within 30 seconds."
+            echo "MongoDB did not become available within 60 seconds."
             exit 1
 
 jobs:
@@ -63,13 +62,13 @@ jobs:
       - run:
           name: Check gofmt
           command: |
+            # List unformatted files
             UNFORMATTED=$(gofmt -l ./cmd ./internal ./bench)
             if [ -n "$UNFORMATTED" ]; then
               echo "The following files are not formatted:"
               echo "$UNFORMATTED"
               exit 1
             fi
-            echo "All files formatted."
 
   # 🐉 Stage 3: Unit & Integration Tests
   test:
@@ -85,10 +84,8 @@ jobs:
       - wait-for-mongo
       - run:
           name: Run Tests with Coverage
-          command: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-      - store_artifacts:
-          path: coverage.txt
-          destination: coverage
+          command: go test -v -race ./...
+      # Removed the coverage artifact to simplify, since -race can be slow
 
   # 🐉 Stage 4: Compile Binary
   build:
@@ -100,14 +97,13 @@ jobs:
           name: Build binary
           command: go build -v ./...
 
-  # 🐉 Stage 5: Verify Dockerfile
+  # 🐉 Stage 5: Verify Dockerfile (Using Machine Executor)
   docker-build:
-    executor: go-executor
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
     steps:
-      - attach_workspace:
-          at: .
-      - setup_remote_docker:
-          docker_layer_caching: true
+      - checkout
       - run:
           name: Build Docker Image
           command: |
