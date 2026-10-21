@@ -5,7 +5,7 @@
 <h1 align="center">Relay</h1>
 
 <p align="center">
-  Reliable webhook delivery for Go applications.
+  Reliable webhook delivery infrastructure for modern applications.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 > **Release status:** The latest published release is **v1.0.0 — Production Ready** ([tag](https://github.com/rajputomsingh/relay/releases/tag/v1.0.0)). The `main` branch tracks stable development.
 
-Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay. Ingestion and delivery are separate stages so the ingest path stays fast and predictable while the delivery engine applies backoff, concurrency limits, and recovery independently.
+Built with Go and MongoDB, Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay. Ingestion and delivery are separate stages so the ingest path stays fast and predictable while the delivery engine applies backoff, concurrency limits, and recovery independently.
 
 - **Runtime:** Go
 - **Persistence:** MongoDB 7 (Go Driver v2)
