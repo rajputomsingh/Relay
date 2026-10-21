@@ -32,7 +32,6 @@ commands:
             exit 1
 
 jobs:
-  # 🐉 Stage 1: Install Dependencies
   install:
     executor: go-executor
     steps:
@@ -50,7 +49,6 @@ jobs:
           paths:
             - .
 
-  # 🐉 Stage 2: Static Analysis (Vet + Format)
   lint:
     executor: go-executor
     steps:
@@ -62,7 +60,6 @@ jobs:
       - run:
           name: Check gofmt
           command: |
-            # List unformatted files
             UNFORMATTED=$(gofmt -l ./cmd ./internal ./bench)
             if [ -n "$UNFORMATTED" ]; then
               echo "The following files are not formatted:"
@@ -70,7 +67,6 @@ jobs:
               exit 1
             fi
 
-  # 🐉 Stage 3: Unit & Integration Tests
   test:
     executor: go-executor
     docker:
@@ -85,11 +81,9 @@ jobs:
           at: .
       - wait-for-mongo
       - run:
-          name: Run Tests with Coverage
-          command: go test -v -race ./...
-      # Removed the coverage artifact to simplify, since -race can be slow
+          name: Run Tests
+          command: go test -v ./...
 
-  # 🐉 Stage 4: Compile Binary
   build:
     executor: go-executor
     steps:
@@ -99,7 +93,6 @@ jobs:
           name: Build binary
           command: go build -v ./...
 
-  # 🐉 Stage 5: Verify Dockerfile (Using Machine Executor)
   docker-build:
     machine:
       image: ubuntu-2204:current
