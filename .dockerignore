@@ -7,7 +7,6 @@ bench/results
 .env
 .env.*
 !.env.example
-docs
 README.md
 LICENSE
 docker-compose*.yml
