@@ -1,29 +1,22 @@
 version: 2.1
 
-jobs:
-  relay-ci:
+executors:
+  go-executor:
     docker:
       - image: cimg/go:1.27.0
-      - image: mongo:7.0
-    environment:
-      MONGODB_TEST_URI: mongodb://localhost:27017
-    steps:
-      - checkout
+    resource_class: medium
+    working_directory: ~/project
 
+commands:
+  restore-go-cache:
+    steps:
       - restore_cache:
           keys:
             - go-mod-v1-{{ checksum "go.sum" }}
             - go-mod-v1-
 
-      - run:
-          name: Download Go modules
-          command: go mod download
-
-      - save_cache:
-          key: go-mod-v1-{{ checksum "go.sum" }}
-          paths:
-            - /home/circleci/go/pkg/mod
-
+  wait-for-mongo:
+    steps:
       - run:
           name: Wait for MongoDB
           shell: /bin/bash
@@ -39,19 +32,105 @@ jobs:
             echo "MongoDB did not become available within 30 seconds."
             exit 1
 
+jobs:
+  # 🐉 Stage 1: Install Dependencies
+  install:
+    executor: go-executor
+    steps:
+      - checkout
+      - restore-go-cache
       - run:
-          name: Run tests
-          command: go test -v ./...
+          name: Download Go modules
+          command: go mod download
+      - save_cache:
+          key: go-mod-v1-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .
 
+  # 🐉 Stage 2: Static Analysis (Vet + Format)
+  lint:
+    executor: go-executor
+    steps:
+      - attach_workspace:
+          at: .
       - run:
           name: Run go vet
           command: go vet ./...
-
       - run:
-          name: Build packages
-          command: go build ./...
+          name: Check gofmt
+          command: |
+            UNFORMATTED=$(gofmt -l ./cmd ./internal ./bench)
+            if [ -n "$UNFORMATTED" ]; then
+              echo "The following files are not formatted:"
+              echo "$UNFORMATTED"
+              exit 1
+            fi
+            echo "All files formatted."
+
+  # 🐉 Stage 3: Unit & Integration Tests
+  test:
+    executor: go-executor
+    docker:
+      - image: cimg/go:1.27.0
+      - image: mongo:7.0
+    environment:
+      MONGODB_TEST_URI: mongodb://localhost:27017
+    steps:
+      - attach_workspace:
+          at: .
+      - wait-for-mongo
+      - run:
+          name: Run Tests with Coverage
+          command: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - store_artifacts:
+          path: coverage.txt
+          destination: coverage
+
+  # 🐉 Stage 4: Compile Binary
+  build:
+    executor: go-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Build binary
+          command: go build -v ./...
+
+  # 🐉 Stage 5: Verify Dockerfile
+  docker-build:
+    executor: go-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Build Docker Image
+          command: |
+            docker build -t relay:test .
+            echo "Docker build successful. Image size:"
+            docker images relay:test --format "{{.Size}}"
 
 workflows:
   relay-validation:
     jobs:
-      - relay-ci
+      - install
+      - lint:
+          requires:
+            - install
+      - test:
+          requires:
+            - install
+      - build:
+          requires:
+            - install
+      - docker-build:
+          requires:
+            - install
+          filters:
+            branches:
+              only: main
