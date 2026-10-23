@@ -6,6 +6,6 @@ scrape_configs:
     scheme: http
     authorization:
       type: Bearer
-      credentials: 'YOUR_RELAY_API_KEY_HERE'
+      credentials: '0123456789abcdef0123456789abcdef'
     static_configs:
       - targets: ['host.docker.internal:8080']

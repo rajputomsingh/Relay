@@ -102,7 +102,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(relay_delivery_attempts_total[5m])) by (outcome)",
+          "expr": "relay_delivery_attempts",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
