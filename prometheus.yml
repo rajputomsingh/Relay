@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'relay'
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials: 'YOUR_RELAY_API_KEY_HERE'
+    static_configs:
+      - targets: ['host.docker.internal:8080']

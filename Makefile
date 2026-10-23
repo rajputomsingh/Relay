@@ -17,3 +17,9 @@ docker-up:
 
 docker-down:
     docker compose down
+
+monitoring-up:
+	docker compose -f docker-compose.monitoring.yml up -d
+
+monitoring-down:
+	docker compose -f docker-compose.monitoring.yml down
