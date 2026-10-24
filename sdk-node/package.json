@@ -1,0 +1,20 @@
+{
+  "name": "@rajputomsingh/relay-node",
+  "version": "1.0.0",
+  "description": "Official Node.js SDK for Relay webhook delivery",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": ["webhooks", "relay", "infrastructure"],
+  "author": "Om Singh Chouhan",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
