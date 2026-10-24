@@ -11,19 +11,21 @@
 <p align="center">
   <a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square" alt="GitHub stars" /></a>
   <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" /></a>
+  <a href="https://www.npmjs.com/package/@rajputomsingh/relay-node"><img src="https://img.shields.io/npm/v/@rajputomsingh/relay-node?style=flat-square" alt="npm version" /></a>
   <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
   <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB" />
 </p>
 
-> **Release status:** The latest published release is **v1.0.0 — Production Ready** ([tag](https://github.com/rajputomsingh/relay/releases/tag/v1.0.0)). The `main` branch tracks stable development.
+> **Release status:** The latest published release is **v1.1.0 — Operational Visibility** ([tag](https://github.com/rajputomsingh/relay/releases/tag/v1.1.0)). The `main` branch tracks stable development.
 
 Built with Go and MongoDB, Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay. Ingestion and delivery are separate stages so the ingest path stays fast and predictable while the delivery engine applies backoff, concurrency limits, and recovery independently.
 
 - **Runtime:** Go
 - **Persistence:** MongoDB 7 (Go Driver v2)
 - **Delivery:** Bounded workers, retries with backoff, per-endpoint state
-- **Operations:** Delivery history, health checks, graceful shutdown, Prometheus metrics
+- **Operations:** Delivery history, health checks, Prometheus & Grafana dashboards
 - **API:** Fully documented OpenAPI (Swagger) specification
+- **SDKs:** Official Node.js/TypeScript client
 
 ## Quick Start
 
@@ -60,6 +62,35 @@ go test ./...
 go vet ./...
 go build ./...
 git diff --check
+```
+
+## Official SDKs
+
+### Node.js / TypeScript
+
+Install the official SDK to integrate Relay into your Node.js or Next.js app:
+
+```bash
+npm install @rajputomsingh/relay-node
+# or pnpm add @rajputomsingh/relay-node
+```
+
+**Usage:**
+
+```typescript
+import { Relay } from "@rajputomsingh/relay-node";
+
+const relay = new Relay({ apiKey: "your-api-key" });
+
+// Send an event with a guaranteed idempotency key
+await relay.sendEvent(
+  {
+    source: "my-app",
+    event_type: "user.created",
+    data: { userId: 123 },
+  },
+  "idempotency-key-123",
+);
 ```
 
 ## Architecture
@@ -169,16 +200,14 @@ function verifyRelaySignature(rawBody, header, secret) {
 ## Operations & Observability
 
 - **Health.** `/healthz` returns `200` while the process runs. `/readyz` returns `200` only when MongoDB responds to ping.
-- **Metrics.** `/metrics` exposes Prometheus metrics for outbound delivery duration and delivery attempt outcomes (success/failure).
+- **Metrics.** `/metrics` exposes Prometheus metrics for outbound delivery duration and delivery attempt outcomes.
+- **Dashboards.** A pre-provisioned Grafana dashboard and Prometheus config are included in `docker-compose.monitoring.yml`.
 - **Shutdown.** On `SIGINT`/`SIGTERM`, Relay stops accepting new requests, drains in-flight deliveries up to the shutdown deadline, then exits.
-- **Lease recovery.** Pending deliveries hold a lease token and expiry. If a worker fails, the lease expires and the delivery is reclaimed.
 - **Retry policy.** Backoff is `retryDelay(n) = 2s × 2^(n-1) + jitter(0–25%)`, capped per delay and bounded by `max_attempts`.
 
 ## Benchmarks
 
 Relay includes a benchmark harness for sustained load, concurrency, failure modes, outage recovery, and queue growth. Full methodology and raw results: [docs/benchmarks.md](docs/benchmarks.md).
-
-All numbers are from a single Windows host with Go 1.27.0 and MongoDB 7 in Docker.
 
 | Measurement                 | Result            |
 | --------------------------- | ----------------- |
@@ -192,22 +221,22 @@ All numbers are from a single Windows host with Go 1.27.0 and MongoDB 7 in Docke
 - Metrics currently query MongoDB on scrape. For very high-throughput setups, an in-memory metrics aggregator is recommended.
 - No tenant isolation or per-tenant authorization (single-tenant instance per deployment).
 - No web UI for event inspection, monitoring, or replay (API-only).
-- End-to-end tests spanning the full network stack are not yet automated.
 
 ## Project Status and Roadmap
 
-**Completed (v1.0.0)**
+**Completed (v1.0.0 & v1.1.0)**
 
 - Production-ready Dockerfile & Compose setup.
-- Prometheus metrics instrumentation.
+- Prometheus metrics instrumentation & Grafana dashboards.
 - OpenAPI (Swagger) interactive documentation.
 - Hardened CI/CD pipeline (CircleCI).
+- Official Node.js/TypeScript SDK.
 
-**Planned (v1.1.0+)**
+**Planned (v1.2.0+)**
 
-- First-class metrics and alerting dashboards (Grafana).
 - Tenant isolation and multi-tenant authorization.
 - Web dashboard for event inspection and replay.
+- Python and Go SDKs.
 
 ## Development and Testing
 
