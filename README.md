@@ -27,6 +27,31 @@ Built with Go and MongoDB, Relay accepts events over HTTP, persists them in Mong
 - **API:** Fully documented OpenAPI (Swagger) specification
 - **SDKs:** Official Node.js/TypeScript client
 
+## Built in the open
+
+Relay is an open-source project welcoming contributions from developers interested in Go, distributed systems, webhook infrastructure, and reliability engineering.
+
+**Looking for a place to start?**
+
+- [`good first issue`](https://github.com/rajputomsingh/Relay/labels/good%20first%20issue) — 1-4 hour tasks, no prior context needed
+- [`help wanted`](https://github.com/rajputomsingh/Relay/labels/help%20wanted) — needs architectural understanding
+- [`advanced`](https://github.com/rajputomsingh/Relay/labels/advanced) — for experienced contributors
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) to set up your environment in under 30 minutes.
+
+**Ideas we would love contributions for:** Python SDK, webhook verification examples, Docker troubleshooting guide, integration tests for retry logic.
+
+---
+
+## Contributors
+
+<a href="https://github.com/rajputomsingh/Relay/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=rajputomsingh/Relay" alt="Contributors" />
+</a>
+
+*Made with [contrib.rocks](https://contrib.rocks).*
+
+---
 ## Quick Start
 
 ### Docker (Recommended)
