@@ -1,0 +1,53 @@
+name: Publish Python SDK to PyPI
+
+on:
+  push:
+    tags:
+      - "sdk-python-v*"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build sdist and wheel
+        working-directory: sdk-python
+        run: python -m build
+
+      - name: Pre-flight scan
+        working-directory: sdk-python
+        run: |
+          set -e
+          SDIST=$(ls dist/*.tar.gz | head -1)
+          mkdir -p /tmp/check
+          tar -xzf "$SDIST" -C /tmp/check
+
+          if grep -rE "pypi-AgEI|pypi-AgEN|TWINE_PASSWORD|PYPI_TOKEN" /tmp/check; then
+            echo "::error::Credential-like string found in sdist. Aborting."
+            exit 1
+          fi
+
+          if find /tmp/check -name ".env*" -o -name ".pypi*" -o -name ".netrc" | grep -q .; then
+            echo "::error::Credential file found in sdist. Aborting."
+            exit 1
+          fi
+
+          echo "sdist pre-flight passed"
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk-python/dist/
