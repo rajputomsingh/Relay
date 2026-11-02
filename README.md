@@ -8,15 +8,32 @@
   Reliable webhook delivery infrastructure for modern applications.
 </p>
 
+
 <p align="center">
-  <a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square" alt="GitHub stars" /></a>
-  <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" /></a>
-  <a href="https://www.npmjs.com/package/@rajputomsingh/relay-node"><img src="https://img.shields.io/npm/v/@rajputomsingh/relay-node?style=flat-square" alt="npm version" /></a>
-  <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
-  <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB" />
+  <a href="https://github.com/rajputomsingh/relay/releases"><img src="https://img.shields.io/github/v/release/rajputomsingh/relay?style=flat-square&label=release" alt="Latest Release" />
+  </a>
+  <a href="https://www.npmjs.com/package/@rajputomsingh/relay-node"><img src="https://img.shields.io/npm/v/@rajputomsingh/relay-node?style=flat-square&logo=npm&label=Node.js%20SDK" alt="Node.js SDK" />
+  </a>
+  <a href="https://pypi.org/project/relay-python-sdk/"><img src="https://img.shields.io/pypi/v/relay-python-sdk?style=flat-square&logo=pypi&label=Python%20SDK" alt="Python SDK" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay"><img src="https://img.shields.io/github/go-mod/go-version/rajputomsingh/relay?style=flat-square&logo=go" alt="Go Version" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square&logo=github" alt="GitHub Stars" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/network/members"><img src="https://img.shields.io/github/forks/rajputomsingh/relay?style=flat-square" alt="GitHub Forks" />
+  </a>
 </p>
 
-> **Release status:** The latest published release is **v1.1.0 — Operational Visibility** ([release tag](https://github.com/rajputomsingh/relay/releases/tag/v1.1.0)). The `main` branch tracks stable development.
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go" />
+  <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB" />
+  <img src="https://img.shields.io/badge/Delivery-At--Least--Once-blue?style=flat-square" alt="At-least-once delivery" />
+</p>
+
+
+> **Release status:** The latest published release is **v1.1.0 - Operational Visibility** ([release tag](https://github.com/rajputomsingh/relay/releases/tag/v1.1.0)). The `main` branch tracks stable development.
 
 Built with Go and MongoDB, Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay.
 
@@ -35,9 +52,9 @@ Relay is an open-source project welcoming contributions from developers interest
 
 **Looking for a place to start?**
 
-- [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) — 1–4 hour tasks, no prior context needed
-- [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted) — needs architectural understanding
-- [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced) — for experienced contributors
+- [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) ➜ 1 to 4 hour tasks, no prior context needed
+- [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted) ➜ needs architectural understanding
+- [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced) ➜ for experienced contributors
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) to set up your environment in under 30 minutes.
 
@@ -150,7 +167,7 @@ Each accepted event flows through five stages:
 
 ## Delivery Semantics
 
-Relay provides **at-least-once delivery**. It does **not** guarantee exactly-once processing — a successful HTTP response plus a persisted attempt record cannot jointly guarantee a single downstream effect.
+Relay provides **at-least-once delivery**. It does **not** guarantee exactly-once processing ➜ a successful HTTP response plus a persisted attempt record cannot jointly guarantee a single downstream effect.
 
 Any downstream system requiring single-effect semantics must implement idempotency using the event `id`.
 
