@@ -17,3 +17,9 @@ bench/results/summary.md
 
 # Benchmark run output. Regenerated on every matrix run.
 bench/results/summary.md
+
+# PyPI credentials — never commit
+.pypi-token
+.pypirc
+.netrc
+
