@@ -8,22 +8,14 @@
   Reliable webhook delivery infrastructure for modern applications.
 </p>
 
-
 <p align="center">
-  <a href="https://github.com/rajputomsingh/relay/releases"><img src="https://img.shields.io/github/v/release/rajputomsingh/relay?style=flat-square&label=release" alt="Latest Release" />
-  </a>
-  <a href="https://www.npmjs.com/package/@rajputomsingh/relay-node"><img src="https://img.shields.io/npm/v/@rajputomsingh/relay-node?style=flat-square&logo=npm&label=Node.js%20SDK" alt="Node.js SDK" />
-  </a>
-  <a href="https://pypi.org/project/relay-python-sdk/"><img src="https://img.shields.io/pypi/v/relay-python-sdk?style=flat-square&logo=pypi&label=Python%20SDK" alt="Python SDK" />
-  </a>
-  <a href="https://github.com/rajputomsingh/relay"><img src="https://img.shields.io/github/go-mod/go-version/rajputomsingh/relay?style=flat-square&logo=go" alt="Go Version" />
-  </a>
-  <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" />
-  </a>
-  <a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square&logo=github" alt="GitHub Stars" />
-  </a>
-  <a href="https://github.com/rajputomsingh/relay/network/members"><img src="https://img.shields.io/github/forks/rajputomsingh/relay?style=flat-square" alt="GitHub Forks" />
-  </a>
+  <a href="https://github.com/rajputomsingh/relay/releases"><img src="https://img.shields.io/github/v/release/rajputomsingh/relay?style=flat-square&label=release" alt="Latest Release" /></a>
+  <a href="https://www.npmjs.com/package/@rajputomsingh/relay-node"><img src="https://img.shields.io/npm/v/@rajputomsingh/relay-node?style=flat-square&logo=npm&label=Node.js%20SDK" alt="Node.js SDK" /></a>
+  <a href="https://pypi.org/project/relay-python-sdk/"><img src="https://img.shields.io/pypi/v/relay-python-sdk?style=flat-square&logo=pypi&label=Python%20SDK" alt="Python SDK" /></a>
+  <a href="https://github.com/rajputomsingh/relay"><img src="https://img.shields.io/github/go-mod/go-version/rajputomsingh/relay?style=flat-square&logo=go" alt="Go Version" /></a>
+<a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rajputomsingh/relay?style=flat-square" alt="License" /></a>
+<a href="https://github.com/rajputomsingh/relay/stargazers"><img src="https://img.shields.io/github/stars/rajputomsingh/relay?style=flat-square&logo=github" alt="GitHub Stars" /></a>
+  <a href="https://github.com/rajputomsingh/relay/network/members"><img src="https://img.shields.io/github/forks/rajputomsingh/relay?style=flat-square" alt="GitHub Forks" /></a>
 </p>
 
 <p align="center">
@@ -32,10 +24,9 @@
   <img src="https://img.shields.io/badge/Delivery-At--Least--Once-blue?style=flat-square" alt="At-least-once delivery" />
 </p>
 
-
 > **Release status:** The latest published release is **v1.1.0 - Operational Visibility** ([release tag](https://github.com/rajputomsingh/relay/releases/tag/v1.1.0)). The `main` branch tracks stable development.
 
-Built with Go and MongoDB, Relay accepts events over HTTP, persists them in MongoDB, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay.
+Relay is an open-source webhook delivery infrastructure project built with Go and MongoDB. It accepts events over HTTP, persists them reliably, and delivers them asynchronously to matching webhook endpoints with retries, delivery tracking, and replay.
 
 Ingestion and delivery are separate stages, keeping the ingest path fast and predictable while the delivery engine independently handles backoff, concurrency limits, and recovery.
 
@@ -52,13 +43,13 @@ Relay is an open-source project welcoming contributions from developers interest
 
 **Looking for a place to start?**
 
-- [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) ➜ 1 to 4 hour tasks, no prior context needed
-- [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted) ➜ needs architectural understanding
-- [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced) ➜ for experienced contributors
+- [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) → 1 to 4 hour tasks, no prior context needed
+- [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted) → needs architectural understanding
+- [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced) → for experienced contributors
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) to set up your environment in under 30 minutes.
 
-**Ideas we would love contributions for:** webhook verification examples, Docker troubleshooting guide, and integration tests for retry logic.
+**Ideas we would love contributions for:** webhook verification examples, Docker troubleshooting guides, and integration tests for retry logic.
 
 ---
 
@@ -167,7 +158,7 @@ Each accepted event flows through five stages:
 
 ## Delivery Semantics
 
-Relay provides **at-least-once delivery**. It does **not** guarantee exactly-once processing ➜ a successful HTTP response plus a persisted attempt record cannot jointly guarantee a single downstream effect.
+Relay provides **at-least-once delivery**. It does **not** guarantee exactly-once processing - a successful HTTP response plus a persisted attempt record cannot jointly guarantee a single downstream effect.
 
 Any downstream system requiring single-effect semantics must implement idempotency using the event `id`.
 
@@ -338,6 +329,36 @@ go vet ./...
 go build ./...
 git diff --check
 ```
+
+## Contributing
+
+Relay is built in the open and welcomes contributions from developers of all experience levels. Whether you're fixing a typo, adding a test, or implementing a new feature, every contribution helps improve the project.
+
+**Quick links:**
+
+- **[Good first issues](https://github.com/rajputomsingh/relay/labels/good%20first%20issue)** → 1 to 4 hour tasks, no prior context needed.
+- **[Help wanted](https://github.com/rajputomsingh/relay/labels/help%20wanted)** → issues that need architectural understanding.
+- **[Advanced issues](https://github.com/rajputomsingh/relay/labels/advanced)** → for experienced contributors.
+- **[Discussions](https://github.com/rajputomsingh/relay/discussions)** → ask questions, share ideas, and propose designs.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** → environment setup, code style, and pull request guidance.
+
+**How to get started:**
+
+1. Find an issue you want to work on.
+2. Comment that you'd like to take it so maintainers and other contributors know it's being worked on.
+3. Fork the repository and create a focused branch.
+4. Follow [Conventional Commits](https://www.conventionalcommits.org/) for your commit messages.
+5. Run the validation gate:
+
+   ```bash
+   go test ./... && go vet ./... && go build ./... && git diff --check
+   ```
+
+6. Open a pull request describing the change, its motivation, and the tests performed.
+
+**Not sure where to start?**
+
+Open a [discussion](https://github.com/rajputomsingh/relay/discussions) or comment on an issue. We welcome questions and are happy to help scope a first contribution.
 
 ## License
 
