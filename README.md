@@ -55,11 +55,30 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) to set up your environment in under 30 m
 
 ## Contributors
 
-<a href="https://github.com/rajputomsingh/relay/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=rajputomsingh/relay" alt="Contributors" />
-</a>
+**New to open source? Start here.** Relay has a curated list of [`good first issue`](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) tasks that take 1–4 hours and need no prior context. Every issue has a clear scope, a known file path, and a time estimate.
 
-_Made with [contrib.rocks](https://contrib.rocks)._
+| Shortcut                                                                                                                  | What it means                              |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| [`good first issue`](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) | 1 to 4 hour tasks, no prior context needed |
+| [`help wanted`](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)           | Needs architectural understanding          |
+| [`documentation`](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3Adocumentation)             | Docs, examples, guides                     |
+| [`advanced`](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3Aadvanced)                       | For experienced contributors               |
+
+Comment on any issue and I will help you scope it. No question is too basic.
+
+Relay is built with contributions from the open-source community.
+
+<p align="center">
+  <a href="https://github.com/rajputomsingh/relay/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=rajputomsingh/relay" alt="Relay Contributors" />
+  </a>
+</p>
+
+<p align="center">
+  Made with <a href="https://contrib.rocks">contrib.rocks</a>.
+</p>
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list of people who have helped build Relay.
 
 ---
 
