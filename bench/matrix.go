@@ -79,15 +79,71 @@ func runMatrix(
 	return nil
 }
 
-// matrixBehaviors selects which behaviors the matrix runner uses. When
-// the caller specified a non-default behavior, only that one is used.
-// Otherwise, fast and slow — the two behaviors that produce meaningful
-// throughput numbers without retry inflation.
+// matrixBehaviors returns the behaviors swept by --matrix.
+//
+// If the caller set --behavior explicitly (cfg.Behavior differs from
+// its default BehaviorFast), the sweep narrows to that single
+// behavior so targeted verification runs complete quickly.
+//
+// Otherwise the sweep covers one behavior from every outcome class
+// the harness exercises: immediate success, latency-bound success,
+// permanent 5xx, client-side timeout, transient 5xx that recovers,
+// an outage window that recovers, and a permanently unavailable
+// downstream. Five of the seven produce retries, so the
+// attempt-breakdown table added in issue #50 renders on every full
+// matrix run.
+//
+// RELAY_BENCH_BEHAVIORS=<csv> overrides both, letting CI or a
+// developer pick an explicit subset without a code change. Unknown
+// names are dropped; if the override yields no recognised
+// behaviors, the full default list is used so a typo can't silently
+// shrink the sweep to zero.
 func matrixBehaviors(cfg Config) []Behavior {
+	if raw := strings.TrimSpace(os.Getenv("RELAY_BENCH_BEHAVIORS")); raw != "" {
+		if out := parseBehaviorList(raw); len(out) > 0 {
+			return out
+		}
+	}
+
 	if cfg.Behavior != BehaviorFast {
 		return []Behavior{cfg.Behavior}
 	}
-	return []Behavior{BehaviorFast, BehaviorSlow}
+
+	return []Behavior{
+		BehaviorFast,
+		BehaviorSlow,
+		BehaviorHTTP500,
+		BehaviorTimeout,
+		BehaviorTransient,
+		BehaviorOutage,
+		BehaviorUnavailable,
+	}
+}
+
+// parseBehaviorList splits a comma-separated override and keeps only
+// names that match a known Behavior constant. Empty input and
+// unrecognised names produce an empty slice so the caller can fall
+// back to the default sweep.
+func parseBehaviorList(raw string) []Behavior {
+	known := map[Behavior]bool{
+		BehaviorFast:        true,
+		BehaviorSlow:        true,
+		BehaviorHTTP500:     true,
+		BehaviorTimeout:     true,
+		BehaviorTransient:   true,
+		BehaviorOutage:      true,
+		BehaviorUnavailable: true,
+	}
+
+	parts := strings.Split(raw, ",")
+	out := make([]Behavior, 0, len(parts))
+	for _, p := range parts {
+		b := Behavior(strings.TrimSpace(p))
+		if known[b] {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // runSingle executes one benchmark combination with a fresh database.
@@ -284,6 +340,7 @@ func writeMatrixSummary(
 			}
 		}
 	}
+
 	sb.WriteString("\n## Notes\n\n")
 	sb.WriteString(
 		"Throughput at low concurrency is bounded by " +
@@ -291,6 +348,17 @@ func writeMatrixSummary(
 			"the bottleneck shifts to the MongoDB claim rate and " +
 			"downstream latency.\n",
 	)
+
+	// Defense in depth (issue #50): if any run had retries, the
+	// attempt-breakdown section MUST be in the output. A regression
+	// that accidentally removes the block above would otherwise write
+	// a summary.md that looks correct except the section is simply
+	// missing. Fail loudly instead.
+	if hasRetries && !strings.Contains(sb.String(), "## Attempt outcomes by attempt number") {
+		return fmt.Errorf(
+			"matrix summary missing attempt breakdown section despite retries",
+		)
+	}
 
 	path := filepath.Join(cfg.OutputDir, "summary.md")
 	if err := os.WriteFile(
