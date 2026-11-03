@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -36,6 +37,11 @@ func collectResult(
 	}
 
 	attemptDistribution, err := readAttemptDistribution(ctx, attemptsCol)
+	if err != nil {
+		return runResult{}, err
+	}
+
+	attemptBreakdown, err := readAttemptBreakdown(ctx, attemptsCol)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -120,6 +126,7 @@ func collectResult(
 			DurationP99MS: percentileMS(attemptDurations, 0.99),
 			Distribution:  attemptDistribution,
 		},
+		AttemptBreakdown: attemptBreakdown,
 		HTTP: httpStats{
 			Requests:  serverSnap.Requests,
 			Successes: serverSnap.Successes,
@@ -320,6 +327,112 @@ func readAttemptDistribution(
 		return nil, fmt.Errorf("iterate distribution: %w", err)
 	}
 	return out, nil
+}
+
+// readAttemptBreakdown returns per-attempt-number outcome counts.
+//
+// Each row groups attempts by their `attempt_number`, counting how many
+// ended with each outcome class. Outcomes are classified from
+// (http_status, outcome, error):
+//
+//   - delivered:   outcome == "delivered"
+//   - http_5xx:    outcome == "failed" and 500 <= http_status < 600
+//   - http_4xx:    outcome == "failed" and 400 <= http_status < 500
+//   - timeout:     outcome == "failed", http_status == 0, and the error
+//     string indicates a timeout
+//   - connection:  outcome == "failed", http_status == 0, and the error
+//     string indicates a connection failure (dial/refused)
+//   - other:       everything else, including failed attempts with
+//     http_status == 0 and no recognizable error
+//
+// The returned slice is ordered by attempt_number ascending.
+func readAttemptBreakdown(
+	ctx context.Context,
+	attemptsCol *mongo.Collection,
+) ([]attemptOutcomeRow, error) {
+	cursor, err := attemptsCol.Find(
+		ctx,
+		bson.M{},
+		options.Find().SetProjection(bson.M{
+			"attempt_number": 1,
+			"outcome":        1,
+			"http_status":    1,
+			"error":          1,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find attempt breakdown: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	type rawAttempt struct {
+		AttemptNumber int    `bson:"attempt_number"`
+		Outcome       string `bson:"outcome"`
+		HTTPStatus    int    `bson:"http_status"`
+		Error         string `bson:"error"`
+	}
+
+	byNumber := make(map[int]*attemptOutcomeRow)
+
+	for cursor.Next(ctx) {
+		var row rawAttempt
+		if err := cursor.Decode(&row); err != nil {
+			return nil, fmt.Errorf("decode attempt breakdown: %w", err)
+		}
+
+		out, ok := byNumber[row.AttemptNumber]
+		if !ok {
+			out = &attemptOutcomeRow{AttemptNumber: row.AttemptNumber}
+			byNumber[row.AttemptNumber] = out
+		}
+
+		switch {
+		case row.Outcome == "delivered":
+			out.Delivered++
+		case row.HTTPStatus >= 500 && row.HTTPStatus < 600:
+			out.HTTP5xx++
+		case row.HTTPStatus >= 400 && row.HTTPStatus < 500:
+			out.HTTP4xx++
+		case row.HTTPStatus == 0 && isTimeoutError(row.Error):
+			out.Timeout++
+		case row.HTTPStatus == 0 && isConnectionError(row.Error):
+			out.ConnectionErr++
+		default:
+			out.OtherStatus++
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate attempt breakdown: %w", err)
+	}
+
+	result := make([]attemptOutcomeRow, 0, len(byNumber))
+	for _, row := range byNumber {
+		result = append(result, *row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].AttemptNumber < result[j].AttemptNumber
+	})
+
+	return result, nil
+}
+
+// isTimeoutError reports whether the error string looks like a
+// client-side timeout.
+func isTimeoutError(errText string) bool {
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "deadline exceeded") ||
+		strings.Contains(lower, "context deadline")
+}
+
+// isConnectionError reports whether the error string looks like a
+// connection failure rather than a timeout or HTTP error.
+func isConnectionError(errText string) bool {
+	lower := strings.ToLower(errText)
+	return strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "dial tcp") ||
+		strings.Contains(lower, "no route to host")
 }
 
 // readRetryGaps returns the gap in milliseconds between consecutive

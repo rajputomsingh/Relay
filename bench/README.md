@@ -1,4 +1,4 @@
-# Delivery Benchmarks
+﻿# Delivery Benchmarks
 
 Reproducible benchmarks for Relay's delivery pipeline. The harness is designed to exercise the real `delivery.Worker` and the production MongoDB schema rather than a separate delivery implementation.
 
@@ -206,3 +206,4 @@ Interpret throughput together with p95/p99 latency, failure rates, and backlog d
 - Store the final reviewed benchmark report in `docs/benchmarks.md`.
 
 Do not publish benchmark numbers as verified until the harness has been run successfully and the reported metrics have been checked against the actual output.
+

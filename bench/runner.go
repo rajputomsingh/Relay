@@ -14,17 +14,18 @@ import (
 // runResult captures everything measured during one benchmark run.
 // It is serialized to JSON by report.go.
 type runResult struct {
-	Config      runConfig        `json:"config"`
-	Environment environmentInfo  `json:"environment"`
-	Timing      timingResult     `json:"timing"`
-	Throughput  throughputResult `json:"throughput"`
-	Attempts    attemptStats     `json:"attempts"`
-	HTTP        httpStats        `json:"http"`
-	Queue       queueStats       `json:"queue"`
-	Final       finalState       `json:"final"`
-	Server      serverStats      `json:"server"`
-	Mongo       mongoStats       `json:"mongo"`
-	Errors      []string         `json:"errors,omitempty"`
+	Config           runConfig           `json:"config"`
+	Environment      environmentInfo     `json:"environment"`
+	Timing           timingResult        `json:"timing"`
+	Throughput       throughputResult    `json:"throughput"`
+	Attempts         attemptStats        `json:"attempts"`
+	AttemptBreakdown []attemptOutcomeRow `json:"attempt_breakdown,omitempty"`
+	HTTP             httpStats           `json:"http"`
+	Queue            queueStats          `json:"queue"`
+	Final            finalState          `json:"final"`
+	Server           serverStats         `json:"server"`
+	Mongo            mongoStats          `json:"mongo"`
+	Errors           []string            `json:"errors,omitempty"`
 }
 
 type runConfig struct {
@@ -71,6 +72,19 @@ type attemptStats struct {
 	DurationP95MS float64       `json:"duration_p95_ms"`
 	DurationP99MS float64       `json:"duration_p99_ms"`
 	Distribution  map[int]int64 `json:"distribution,omitempty"`
+}
+
+// attemptOutcomeRow is one row of the per-attempt-number breakdown.
+// Each row counts how many attempts at that attempt_number ended with
+// the given outcome. An "attempt" is one HTTP request the worker made.
+type attemptOutcomeRow struct {
+	AttemptNumber int   `json:"attempt_number"`
+	Delivered     int64 `json:"delivered"`
+	HTTP5xx       int64 `json:"http_5xx"`
+	HTTP4xx       int64 `json:"http_4xx"`
+	OtherStatus   int64 `json:"other_status"`
+	ConnectionErr int64 `json:"connection_error"`
+	Timeout       int64 `json:"timeout"`
 }
 
 type httpStats struct {
