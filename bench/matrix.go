@@ -233,6 +233,57 @@ func writeMatrixSummary(
 		))
 	}
 
+	// Only show the attempt breakdown when at least one run had
+	// retries. Otherwise it is noise for purely successful matrices.
+	hasRetries := false
+	for _, r := range results {
+		totalAttempts := int64(0)
+		for _, row := range r.Result.AttemptBreakdown {
+			totalAttempts += row.Delivered +
+				row.HTTP5xx +
+				row.HTTP4xx +
+				row.OtherStatus +
+				row.ConnectionErr +
+				row.Timeout
+		}
+		if totalAttempts > r.Result.Throughput.SuccessfulTotal {
+			hasRetries = true
+			break
+		}
+	}
+
+	if hasRetries {
+		sb.WriteString("\n## Attempt outcomes by attempt number\n\n")
+		sb.WriteString(
+			"Each row shows how many attempts at that attempt number ended " +
+				"with each outcome. A delivery can appear at multiple " +
+				"attempt numbers if it retried.\n\n",
+		)
+		sb.WriteString(
+			"| Concurrency | Behavior | Attempt # | Delivered | " +
+				"HTTP 5xx | HTTP 4xx | Connection | Timeout | Other |\n",
+		)
+		sb.WriteString(
+			"|---|---|---|---|---|---|---|---|---|\n",
+		)
+
+		for _, r := range results {
+			for _, row := range r.Result.AttemptBreakdown {
+				sb.WriteString(fmt.Sprintf(
+					"| %d | %s | %d | %d | %d | %d | %d | %d | %d |\n",
+					r.Config.Concurrency,
+					r.Config.Behavior,
+					row.AttemptNumber,
+					row.Delivered,
+					row.HTTP5xx,
+					row.HTTP4xx,
+					row.ConnectionErr,
+					row.Timeout,
+					row.OtherStatus,
+				))
+			}
+		}
+	}
 	sb.WriteString("\n## Notes\n\n")
 	sb.WriteString(
 		"Throughput at low concurrency is bounded by " +
