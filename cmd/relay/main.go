@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
@@ -18,6 +19,7 @@ import (
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
+	"github.com/rajputomsingh/relay/internal/reconciler"
 
 	_ "github.com/rajputomsingh/relay/docs"
 	httpSwagger "github.com/swaggo/http-swagger"
@@ -152,6 +154,12 @@ func main() {
 	// Start the delivery worker loop
 	go worker.Run(ctx)
 
+	// Start the reconciler loop
+	recStore := reconciler.NewStore(db)
+	recFanout := &reconcilerFanoutAdapter{fanout: fanout}
+	rec := reconciler.New(recStore, recFanout, reconciler.DefaultConfig, slog.Default())
+	go rec.Run(ctx)
+
 	// Start the HTTP server
 	go func() {
 		slog.Info("starting HTTP server", "port", cfg.Port)
@@ -172,4 +180,13 @@ func main() {
 	}
 
 	slog.Info("shutdown complete")
+}
+
+// reconcilerFanoutAdapter bridges the Reconciler's interface to the existing Fanout object.
+type reconcilerFanoutAdapter struct {
+	fanout *delivery.Fanout
+}
+
+func (a *reconcilerFanoutAdapter) FanOutEvent(ctx context.Context, eventID bson.ObjectID, source, eventType string) error {
+	return a.fanout.CreateDeliveries(ctx, eventID, source, eventType)
 }
