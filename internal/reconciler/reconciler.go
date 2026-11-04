@@ -4,7 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+// EventFanouter is the interface the reconciler uses to re-trigger fan-out.
+// This allows us to inject the existing matching logic without circular imports.
+type EventFanouter interface {
+	FanOutEvent(ctx context.Context, eventID bson.ObjectID, source, eventType string) error
+}
 
 // Config holds the tunable parameters for the reconciler.
 type Config struct {
@@ -17,22 +25,24 @@ type Config struct {
 var DefaultConfig = Config{
 	Interval:        60 * time.Second,
 	OrphanThreshold: 5 * time.Minute,
-	StuckThreshold:  2 * time.Minute, // Lease is usually 30s, so 2m is safe
+	StuckThreshold:  2 * time.Minute,
 }
 
 // Reconciler is the background worker that heals the database.
 type Reconciler struct {
-	store  *Store
-	config Config
-	logger *slog.Logger
+	store    *Store
+	fanouter EventFanouter
+	config   Config
+	logger   *slog.Logger
 }
 
 // New creates a new Reconciler.
-func New(store *Store, cfg Config, logger *slog.Logger) *Reconciler {
+func New(store *Store, fanouter EventFanouter, cfg Config, logger *slog.Logger) *Reconciler {
 	return &Reconciler{
-		store:  store,
-		config: cfg,
-		logger: logger,
+		store:    store,
+		fanouter: fanouter,
+		config:   cfg,
+		logger:   logger,
 	}
 }
 
@@ -76,7 +86,6 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 			r.logger.Error("failed to reset stuck deliveries", "error", err)
 		} else {
 			r.logger.Info("reset stuck deliveries to pending", "count", resetCount)
-			// TODO: Add Prometheus metric here in Commit 4
 		}
 	}
 
@@ -87,9 +96,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		r.logger.Error("failed to find orphaned events", "error", err)
 	} else if len(orphanedEvents) > 0 {
 		r.logger.Info("found orphaned events, triggering fan-out", "count", len(orphanedEvents))
-		// TODO: Call the fan-out logic here
-		// For now, we just log it. In a real system, we'd call `events.FanOut(...)`
-		// TODO: Add Prometheus metric here in Commit 4
+
+		for _, evt := range orphanedEvents {
+			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
+				r.logger.Error("failed to fan-out orphaned event", "event_id", evt.ID.Hex(), "error", err)
+			}
+		}
 	}
 
 	r.logger.Debug("reconcile pass complete", "duration_ms", time.Since(start).Milliseconds())
