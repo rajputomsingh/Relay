@@ -5,7 +5,27 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+var (
+	eventsHealed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "relay_reconciler_events_healed_total",
+		Help: "Total number of orphaned events healed by the reconciler",
+	})
+
+	deliveriesReset = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "relay_reconciler_deliveries_reset_total",
+		Help: "Total number of stuck deliveries reset to pending by the reconciler",
+	})
+
+	reconcileDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "relay_reconciler_duration_seconds",
+		Help:    "Time taken for a single reconcile pass",
+		Buckets: prometheus.DefBuckets,
+	})
 )
 
 // EventFanouter is the interface the reconciler uses to re-trigger fan-out.
@@ -74,6 +94,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 // reconcile performs one full healing pass.
 func (r *Reconciler) reconcile(ctx context.Context) {
 	start := time.Now()
+	defer func() {
+		reconcileDuration.Observe(time.Since(start).Seconds())
+	}()
 
 	// 1. Heal stuck deliveries
 	stuckThreshold := time.Now().UTC().Add(-r.config.StuckThreshold)
@@ -84,8 +107,9 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		resetCount, err := r.store.ResetDeliveriesToPending(ctx, stuckIDs)
 		if err != nil {
 			r.logger.Error("failed to reset stuck deliveries", "error", err)
-		} else {
+		} else if resetCount > 0 {
 			r.logger.Info("reset stuck deliveries to pending", "count", resetCount)
+			deliveriesReset.Add(float64(resetCount))
 		}
 	}
 
@@ -100,6 +124,8 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		for _, evt := range orphanedEvents {
 			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
 				r.logger.Error("failed to fan-out orphaned event", "event_id", evt.ID.Hex(), "error", err)
+			} else {
+				eventsHealed.Inc()
 			}
 		}
 	}
