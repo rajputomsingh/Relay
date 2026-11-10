@@ -26,3 +26,16 @@ bench/results/summary.md
 .pypi-token
 .pypirc
 .netrc
+
+# Node.js dependencies
+node_modules/
+sdk-node/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+sdk-python/**/__pycache__/
+
+# Go test binaries
+sdk-go/*.test

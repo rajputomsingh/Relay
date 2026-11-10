@@ -1,20 +1,36 @@
 {
   "name": "@rajputomsingh/relay-node",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Official Node.js SDK for Relay webhook delivery",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "RELAY_TEST_BASE_URL=http://localhost:8080 RELAY_TEST_API_KEY=$RELAY_API_KEY vitest run integration",
+    "typecheck": "tsc --noEmit"
   },
-  "keywords": ["webhooks", "relay", "infrastructure"],
+  "keywords": [
+    "webhooks",
+    "relay",
+    "infrastructure"
+  ],
   "author": "Om Singh Chouhan",
   "license": "Apache-2.0",
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
   }
 }
