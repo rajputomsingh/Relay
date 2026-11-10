@@ -65,6 +65,36 @@ func TestEndpointValidate(t *testing.T) {
 				e.SigningSecret = "0123456789abcdef0123456789abcdef"
 			},
 		},
+		{
+			name:    "SSRF: loopback IPv4",
+			modify:  func(e *Endpoint) { e.URL = "https://127.0.0.1/hook" },
+			wantErr: true,
+		},
+		{
+			name:    "SSRF: IPv6 loopback",
+			modify:  func(e *Endpoint) { e.URL = "https://[::1]/hook" },
+			wantErr: true,
+		},
+		{
+			name:    "SSRF: RFC1918 10.x",
+			modify:  func(e *Endpoint) { e.URL = "https://10.0.0.5/hook" },
+			wantErr: true,
+		},
+		{
+			name:    "SSRF: RFC1918 172.16.x",
+			modify:  func(e *Endpoint) { e.URL = "https://172.16.0.1/hook" },
+			wantErr: true,
+		},
+		{
+			name:    "SSRF: RFC1918 192.168.x",
+			modify:  func(e *Endpoint) { e.URL = "https://192.168.1.1/hook" },
+			wantErr: true,
+		},
+		{
+			name:    "SSRF: link-local (cloud metadata)",
+			modify:  func(e *Endpoint) { e.URL = "https://169.254.169.254/hook" },
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

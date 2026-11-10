@@ -16,12 +16,26 @@ type pinger interface {
 	Ping(ctx context.Context, rp *readpref.ReadPref) error
 }
 
+// indexChecker reports whether the required database indexes exist.
+// Optional: if nil, readiness does not check indexes.
+type indexChecker interface {
+	MissingIndexes(ctx context.Context) ([]string, error)
+}
+
 type HealthHandler struct {
-	client pinger
+	client       pinger
+	indexChecker indexChecker
 }
 
 func NewHealthHandler(client pinger) *HealthHandler {
 	return &HealthHandler{client: client}
+}
+
+// WithIndexChecker attaches an index checker to the readiness probe.
+// When set, readiness returns 503 if any required index is missing.
+func (h *HealthHandler) WithIndexChecker(c indexChecker) *HealthHandler {
+	h.indexChecker = c
+	return h
 }
 
 func (h *HealthHandler) Register(mux *http.ServeMux) {
@@ -66,6 +80,22 @@ func (h *HealthHandler) readiness(w http.ResponseWriter, r *http.Request) {
 			"status": "not_ready",
 		})
 		return
+	}
+
+	if h.indexChecker != nil {
+		missing, err := h.indexChecker.MissingIndexes(ctx)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "not_ready",
+			})
+			return
+		}
+		if len(missing) > 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "not_ready",
+			})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{

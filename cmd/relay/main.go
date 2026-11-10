@@ -17,6 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
 	"github.com/rajputomsingh/relay/internal/config"
+	"github.com/rajputomsingh/relay/internal/database"
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
@@ -53,6 +54,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Effective security configuration — logged so operators can verify
+	// what is actually active without inspecting env vars or code.
+	slog.Info("effective security configuration",
+		"environment", cfg.Environment,
+		"signing_enabled", cfg.WebhookSigningSecret != "",
+		"ssrf_guard_enabled", !cfg.AllowPrivateWebhookURLs,
+		"webhook_configured", cfg.WebhookURL != "",
+		"allow_private_webhook_urls", cfg.AllowPrivateWebhookURLs,
+	)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -73,6 +84,15 @@ func main() {
 	}
 
 	db := client.Database(cfg.MongoDatabase)
+
+	// Ensure required indexes exist. Non-fatal: Relay logs and continues,
+	// but readiness will fail until indexes are created.
+	indexCtx, indexCancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := database.EnsureMultiEndpointIndexes(indexCtx, db); err != nil {
+		slog.Error("failed to ensure indexes", "error", err)
+	}
+	indexCancel()
+
 	eventsCollection := db.Collection("events")
 	endpointsCollection := db.Collection("endpoints")
 	deliveriesCollection := db.Collection("deliveries")
@@ -102,7 +122,8 @@ func main() {
 
 	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)
 
-	healthHandler := handlers.NewHealthHandler(client)
+	healthHandler := handlers.NewHealthHandler(client).
+		WithIndexChecker(database.NewIndexChecker(db))
 	healthHandler.Register(mux)
 
 	fanout := delivery.NewFanout(

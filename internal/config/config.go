@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -21,6 +22,11 @@ type Config struct {
 	WorkerConcurrency    int
 	MaxDeliveryAttempts  int
 	WebhookSigningSecret string
+	// AllowPrivateWebhookURLs permits RFC 1918, loopback, and link-local
+	// destinations for RELAY_WEBHOOK_URL. Default false (SSRF protection).
+	// Set true only for local development or when the operator controls
+	// the network topology.
+	AllowPrivateWebhookURLs bool
 }
 
 func Load() (Config, error) {
@@ -59,7 +65,18 @@ func Load() (Config, error) {
 		return Config{}, errors.New("invalid APP_ENV value")
 	}
 
-	// The destination is operator-controlled configuration.
+	// SSRF defense: private destination addresses are off by default.
+	allowPrivate, err := strconv.ParseBool(
+		getEnv("RELAY_WEBHOOK_URL_ALLOW_PRIVATE", "false"),
+	)
+	if err != nil {
+		return Config{}, errors.New(
+			"RELAY_WEBHOOK_URL_ALLOW_PRIVATE must be true or false",
+		)
+	}
+	cfg.AllowPrivateWebhookURLs = allowPrivate
+
+	// Destination URL validation.
 	if cfg.WebhookURL != "" {
 		u, err := url.ParseRequestURI(cfg.WebhookURL)
 		if err != nil || u.Hostname() == "" ||
@@ -74,6 +91,17 @@ func Load() (Config, error) {
 			return Config{}, errors.New(
 				"RELAY_WEBHOOK_URL must use HTTPS in production",
 			)
+		}
+
+		if !cfg.AllowPrivateWebhookURLs {
+			if ip := net.ParseIP(u.Hostname()); ip != nil {
+				if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+					return Config{}, errors.New(
+						"RELAY_WEBHOOK_URL resolves to a private, loopback, or link-local address; " +
+							"set RELAY_WEBHOOK_URL_ALLOW_PRIVATE=true to allow this",
+					)
+				}
+			}
 		}
 	}
 
@@ -119,6 +147,16 @@ func Load() (Config, error) {
 				"RELAY_WEBHOOK_SIGNING_SECRET requires RELAY_WEBHOOK_URL",
 			)
 		}
+	}
+
+	// Production requires signing when a webhook URL is configured.
+	// Delivering unsigned webhooks in production is a security defect.
+	if cfg.Environment == "production" &&
+		cfg.WebhookURL != "" &&
+		cfg.WebhookSigningSecret == "" {
+		return Config{}, errors.New(
+			"RELAY_WEBHOOK_SIGNING_SECRET is required in production when RELAY_WEBHOOK_URL is set",
+		)
 	}
 
 	return cfg, nil

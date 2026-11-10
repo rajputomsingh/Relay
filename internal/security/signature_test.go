@@ -107,3 +107,40 @@ func TestVerifyHandlesEmptyBody(t *testing.T) {
 		t.Fatalf("Verify rejected an empty body signature: %v", err)
 	}
 }
+
+func TestVerifyWithFreshnessAcceptsFreshSignature(t *testing.T) {
+	signer := mustSigner(t)
+	body := []byte(`{"event_id":"abc"}`)
+	ts := TimestampNow()
+
+	sig := signer.SignBody(ts, body)
+	if err := signer.VerifyWithFreshness(ts, body, sig, DefaultMaxAge); err != nil {
+		t.Fatalf("VerifyWithFreshness rejected fresh signature: %v", err)
+	}
+}
+
+func TestVerifyWithFreshnessRejectsStaleSignature(t *testing.T) {
+	signer := mustSigner(t)
+	body := []byte(`{"event_id":"abc"}`)
+	// 10 minutes old — beyond the 5-minute default window.
+	ts := TimestampNow() - 600
+
+	sig := signer.SignBody(ts, body)
+	err := signer.VerifyWithFreshness(ts, body, sig, DefaultMaxAge)
+	if !errors.Is(err, ErrStaleTimestamp) {
+		t.Fatalf("expected ErrStaleTimestamp, got %v", err)
+	}
+}
+
+func TestVerifyWithFreshnessRejectsFutureSignature(t *testing.T) {
+	signer := mustSigner(t)
+	body := []byte(`{"event_id":"abc"}`)
+	// 10 minutes in the future — beyond the 5-minute default window.
+	ts := TimestampNow() + 600
+
+	sig := signer.SignBody(ts, body)
+	err := signer.VerifyWithFreshness(ts, body, sig, DefaultMaxAge)
+	if !errors.Is(err, ErrStaleTimestamp) {
+		t.Fatalf("expected ErrStaleTimestamp, got %v", err)
+	}
+}

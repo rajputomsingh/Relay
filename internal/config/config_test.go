@@ -255,12 +255,17 @@ func TestLoadAcceptsHTTPSWebhookInProduction(t *testing.T) {
 	setValidEnvironment(t)
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("RELAY_WEBHOOK_URL", "https://example.com/webhook")
+	// Phase 6 policy: production with a webhook URL requires a signing
+	// secret. Provide one so this test exercises the HTTPS-accepted path.
+	t.Setenv(
+		"RELAY_WEBHOOK_SIGNING_SECRET",
+		"0123456789abcdef0123456789abcdef",
+	)
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load() rejected valid production configuration: %v", err)
 	}
 }
-
 func TestLoadRejectsInvalidSigningConfiguration(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -311,5 +316,62 @@ func TestLoadAcceptsValidSigningConfiguration(t *testing.T) {
 	}
 	if cfg.WebhookSigningSecret == "" {
 		t.Fatal("expected signing secret to be loaded")
+	}
+}
+
+func TestLoadRejectsPrivateWebhookURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "loopback IPv4", url: "https://127.0.0.1/hook"},
+		{name: "loopback IPv6", url: "https://[::1]/hook"},
+		{name: "RFC1918 10.x", url: "https://10.0.0.5/hook"},
+		{name: "RFC1918 172.16.x", url: "https://172.16.0.1/hook"},
+		{name: "RFC1918 192.168.x", url: "https://192.168.1.1/hook"},
+		{name: "link-local", url: "https://169.254.169.254/hook"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			t.Setenv("RELAY_WEBHOOK_URL", tt.url)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted private URL %q, expected error", tt.url)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsPrivateWebhookURLWhenAllowed(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_WEBHOOK_URL", "https://127.0.0.1/hook")
+	t.Setenv("RELAY_WEBHOOK_URL_ALLOW_PRIVATE", "true")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() rejected private URL with allow_private: %v", err)
+	}
+}
+
+func TestLoadRejectsProductionWebhookWithoutSigning(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("RELAY_WEBHOOK_URL", "https://example.com/hook")
+	t.Setenv("RELAY_WEBHOOK_SIGNING_SECRET", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted production webhook without signing secret")
+	}
+}
+
+func TestLoadAcceptsProductionWebhookWithSigning(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("RELAY_WEBHOOK_URL", "https://example.com/hook")
+	t.Setenv("RELAY_WEBHOOK_SIGNING_SECRET", "0123456789abcdef0123456789abcdef")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() rejected valid production config: %v", err)
 	}
 }
