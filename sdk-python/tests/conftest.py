@@ -1,4 +1,5 @@
 """Pytest fixtures for the Relay SDK test suite."""
+
 import pytest
 
 from relay_python import Relay

@@ -1,4 +1,7 @@
 """Internal HTTP transport."""
+
+from __future__ import annotations
+
 from typing import Any
 
 import httpx
@@ -14,7 +17,7 @@ class HttpTransport:
             base_url=base_url.rstrip("/"),
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "User-Agent": "relay-python/0.1.0",
+                "User-Agent": "relay-python/0.2.0",
                 "Content-Type": "application/json",
             },
             timeout=timeout,
@@ -30,8 +33,9 @@ class HttpTransport:
         *,
         json: Any = None,
         headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        resp = self._client.request(method, path, json=json, headers=headers)
+        resp = self._client.request(method, path, json=json, headers=headers, params=params)
         body: dict[str, Any] = {}
         if resp.content:
             try:
@@ -43,7 +47,7 @@ class HttpTransport:
         _raise_for_status(resp.status_code, code, message)
         return body
 
-    def __enter__(self) -> "HttpTransport":
+    def __enter__(self) -> HttpTransport:
         return self
 
     def __exit__(self, *args: Any) -> None:
