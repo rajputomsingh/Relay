@@ -26,7 +26,7 @@ services:
       - PORT=8080
       - MONGODB_URI=mongodb://mongo:27017
       - MONGODB_DATABASE=relay
-      - RELAY_API_KEY=${RELAY_API_KEY:-dev-secret-api-key}
+      - RELAY_API_KEY=${RELAY_API_KEY:?Set RELAY_API_KEY in .env}
       - RELAY_WORKER_POLL_SECONDS=2
       - RELAY_MAX_DELIVERY_ATTEMPTS=8
       - RELAY_WORKER_CONCURRENCY=4
