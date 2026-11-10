@@ -138,9 +138,7 @@ On Windows, take the PID from `netstat` and identify the process with `tasklist 
 - In Docker Desktop, enable file sharing for the drive that contains the repository, then restart Docker Desktop.
 - Clone the repository under a shared location such as `C:\Users\<name>\Relay` and run `docker compose` from the repository root so the relative bind-mount paths resolve.
 - If a YAML file was edited on Windows, ensure it uses LF line endings before restarting the monitoring stack.
-- The `mongo_data` volume is a named volume managed by Docker, not a bind mount. If it was created by an incompatible MongoDB version and MongoDB exits on startup, you may need to recreate it.
-
-> **Warning:** Running `docker compose down -v` permanently deletes the `mongo_data` volume and all stored MongoDB data. This cannot be undone. Only run it when you intend to reset the database.
+- The `mongo_data` volume is a named volume managed by Docker, not a bind mount. If it was created by an incompatible MongoDB version and MongoDB exits on startup, you may need to reset it. See [Resetting MongoDB data](#resetting-mongodb-data-destructive).
 
 **Diagnostic commands:**
 
@@ -149,7 +147,14 @@ docker compose ps
 docker compose logs mongo
 docker volume ls
 docker volume inspect relay_mongo_data
-docker compose down -v   # permanently deletes mongo_data and all MongoDB data
+```
+
+### Resetting MongoDB data (destructive)
+
+> **Warning:** The command below permanently deletes the `mongo_data` volume and all stored MongoDB data. This cannot be undone. Only run it when you intend to reset the database.
+
+```bash
+docker compose down -v
 ```
 
 ### Relay container exits or cannot reach MongoDB
@@ -162,7 +167,7 @@ docker compose down -v   # permanently deletes mongo_data and all MongoDB data
 - Relay cannot reach `mongo` because the MongoDB container is unhealthy or still starting.
 
 **Resolution:**
-- Set a key with sufficient length in the repository root `.env`, for example `RELAY_API_KEY=$(openssl rand -hex 32)`. Compose reads this file to substitute `${RELAY_API_KEY}`.
+- Generate a key with `openssl rand -hex 32`, then copy the output into the repository root `.env` as `RELAY_API_KEY=<generated-value>`. Compose reads this file to substitute `${RELAY_API_KEY}`.
 - Wait for the MongoDB healthcheck to pass. The `relay` service depends on `mongo` being healthy, but a failing healthcheck prevents Relay from starting at all.
 - Remember that the Relay image is distroless and has no shell, so `docker compose exec relay sh` will fail. Use `docker compose logs relay` and host-side `curl` for diagnosis.
 
