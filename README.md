@@ -94,6 +94,8 @@ curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
 ```
 
+If the containers fail to start or Relay cannot reach MongoDB, see the [Docker Compose troubleshooting guide](docs/deployment.md#troubleshooting).
+
 ## Sending Events
 
 Relay exposes an HTTP API for submitting events. Requests to `/v1/*` endpoints require Bearer token authentication.
