@@ -7,7 +7,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // Store handles the database operations required by the reconciler.
@@ -35,7 +34,7 @@ type EventRecord struct {
 func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
-			"created_at": bson.M{"$lt": threshold},
+			"received_at": bson.M{"$lt": threshold},
 		}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
 			"from":         "deliveries",
@@ -66,57 +65,35 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 	return events, nil
 }
 
-// FindStuckDeliveries returns deliveries stuck in 'processing' state past the lease threshold.
-func (s *Store) FindStuckDeliveries(ctx context.Context, threshold time.Time) ([]bson.ObjectID, error) {
+// ResetExpiredLeases atomically transitions processing deliveries whose
+// lease has expired back to pending.
+//
+// The update is conditional on the delivery still being in `processing`
+// status with `lease_until <= now`. A worker that reclaimed or renewed the
+// lease between discovery and this update will not be affected, because
+// the filter no longer matches its row.
+//
+// Both lease_token and lease_until are cleared so that inspection and
+// metrics do not report a lease for a delivery no worker owns.
+func (s *Store) ResetExpiredLeases(ctx context.Context, now time.Time) (int64, error) {
 	filter := bson.M{
-		"status":     "processing",
-		"updated_at": bson.M{"$lt": threshold},
+		"status":      "processing",
+		"lease_until": bson.M{"$lte": now},
 	}
-
-	opts := options.Find().SetProjection(bson.M{"_id": 1})
-
-	cursor, err := s.deliveriesCol.Find(ctx, filter, opts)
-	if err != nil {
-		return nil, fmt.Errorf("find stuck deliveries: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	var ids []bson.ObjectID
-	for cursor.Next(ctx) {
-		var row struct {
-			ID bson.ObjectID `bson:"_id"`
-		}
-		if err := cursor.Decode(&row); err != nil {
-			return nil, fmt.Errorf("decode stuck delivery: %w", err)
-		}
-		ids = append(ids, row.ID)
-	}
-
-	if err := cursor.Err(); err != nil {
-		return nil, fmt.Errorf("iterate stuck deliveries: %w", err)
-	}
-
-	return ids, nil
-}
-
-// ResetDeliveriesToPending updates the status of the given deliveries to 'pending'.
-func (s *Store) ResetDeliveriesToPending(ctx context.Context, ids []bson.ObjectID) (int64, error) {
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	filter := bson.M{"_id": bson.M{"$in": ids}}
 	update := bson.M{
 		"$set": bson.M{
-			"status":      "pending",
-			"updated_at":  time.Now().UTC(),
-			"lease_token": nil,
+			"status":     "pending",
+			"updated_at": now,
+		},
+		"$unset": bson.M{
+			"lease_token": "",
+			"lease_until": "",
 		},
 	}
 
 	result, err := s.deliveriesCol.UpdateMany(ctx, filter, update)
 	if err != nil {
-		return 0, fmt.Errorf("reset stuck deliveries: %w", err)
+		return 0, fmt.Errorf("reset expired leases: %w", err)
 	}
 
 	return result.ModifiedCount, nil

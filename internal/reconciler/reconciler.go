@@ -38,7 +38,9 @@ type EventFanouter interface {
 type Config struct {
 	Interval        time.Duration // How often the loop runs (e.g., 60s)
 	OrphanThreshold time.Duration // How old an event must be to be considered orphaned (e.g., 5m)
-	StuckThreshold  time.Duration // How old a processing delivery must be to be reset (e.g., 2m)
+	// Deprecated: lease recovery now uses delivery.lease_until directly.
+	// Retained for backward compatibility with existing callers; has no effect.
+	StuckThreshold time.Duration
 }
 
 // DefaultConfig provides safe defaults.
@@ -71,7 +73,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	r.logger.Info("reconciler started",
 		"interval", r.config.Interval,
 		"orphan_threshold", r.config.OrphanThreshold,
-		"stuck_threshold", r.config.StuckThreshold,
 	)
 
 	ticker := time.NewTicker(r.config.Interval)
@@ -99,18 +100,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	}()
 
 	// 1. Heal stuck deliveries
-	stuckThreshold := time.Now().UTC().Add(-r.config.StuckThreshold)
-	stuckIDs, err := r.store.FindStuckDeliveries(ctx, stuckThreshold)
+	resetCount, err := r.store.ResetExpiredLeases(ctx, time.Now().UTC())
 	if err != nil {
-		r.logger.Error("failed to find stuck deliveries", "error", err)
-	} else if len(stuckIDs) > 0 {
-		resetCount, err := r.store.ResetDeliveriesToPending(ctx, stuckIDs)
-		if err != nil {
-			r.logger.Error("failed to reset stuck deliveries", "error", err)
-		} else if resetCount > 0 {
-			r.logger.Info("reset stuck deliveries to pending", "count", resetCount)
-			deliveriesReset.Add(float64(resetCount))
-		}
+		r.logger.Error("failed to reset expired delivery leases", "error", err)
+	} else if resetCount > 0 {
+		r.logger.Info("reset expired delivery leases to pending", "count", resetCount)
+		deliveriesReset.Add(float64(resetCount))
 	}
 
 	// 2. Heal orphaned events
