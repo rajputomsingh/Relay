@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -79,18 +80,20 @@ func main() {
 
 	endpointStore := endpoints.NewStore(endpointsCollection)
 
+	// Lifecycle aggregator is the sole writer of events.delivery_status.
+	aggregator := lifecycle.NewAggregator(eventsCollection, deliveriesCollection)
+
 	// Construct the delivery worker
 	worker := delivery.NewWorker(
 		eventsCollection,
 		endpointsCollection,
 		deliveriesCollection,
 		attemptsCollection,
+		aggregator,
 		delivery.Config{
 			Logger:         slog.Default(),
-			PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
 			Concurrency:    cfg.WorkerConcurrency,
 			RequestTimeout: 10 * time.Second,
-			LeaseDuration:  30 * time.Second,
 		},
 	)
 
@@ -106,9 +109,9 @@ func main() {
 		eventsCollection,
 		endpointsCollection,
 		deliveriesCollection,
+		aggregator,
 		slog.Default(),
 	)
-
 	eventsHandler := handlers.NewEventsHandler(
 		eventsCollection,
 		cfg.RelayAPIKey,
@@ -159,7 +162,7 @@ func main() {
 	// Start the reconciler loop
 	recStore := reconciler.NewStore(db)
 	recFanout := &reconcilerFanoutAdapter{fanout: fanout}
-	rec := reconciler.New(recStore, recFanout, reconciler.DefaultConfig, slog.Default())
+	rec := reconciler.New(recStore, recFanout, aggregator, reconciler.DefaultConfig, slog.Default())
 	go rec.Run(ctx)
 
 	// Start the HTTP server

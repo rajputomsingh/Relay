@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"github.com/rajputomsingh/relay/internal/security"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -87,7 +88,6 @@ func newWorkerIntegrationDB(t *testing.T) workerIntegrationDB {
 
 const integrationDBOperationTimeout = 15 * time.Second
 
-// insertWorkerIntegrationEvent inserts a minimal event document.
 func insertWorkerIntegrationEvent(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -116,7 +116,6 @@ func insertWorkerIntegrationEvent(
 	return id
 }
 
-// insertWorkerIntegrationEndpoint inserts an enabled endpoint.
 func insertWorkerIntegrationEndpoint(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -152,8 +151,6 @@ func insertWorkerIntegrationEndpoint(
 	return id
 }
 
-// insertWorkerIntegrationEndpointWithRateLimit inserts an enabled
-// endpoint with the given rate limit.
 func insertWorkerIntegrationEndpointWithRateLimit(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -191,7 +188,6 @@ func insertWorkerIntegrationEndpointWithRateLimit(
 	return id
 }
 
-// insertWorkerIntegrationDelivery inserts a due delivery.
 func insertWorkerIntegrationDelivery(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -225,7 +221,6 @@ func insertWorkerIntegrationDelivery(
 	return id
 }
 
-// readWorkerDeliveryState reads the current delivery document.
 func readWorkerDeliveryState(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -245,8 +240,6 @@ func readWorkerDeliveryState(
 	return d
 }
 
-// readWorkerAttempts returns all persisted attempts for a delivery's
-// event/endpoint pair.
 func readWorkerAttempts(
 	t *testing.T,
 	collection *mongo.Collection,
@@ -276,7 +269,11 @@ func readWorkerAttempts(
 	return attempts
 }
 
-// newIntegrationWorker builds a worker against the test DB.
+// newTestAggregator creates a real aggregator bound to the test DB.
+func newTestAggregator(db workerIntegrationDB) *lifecycle.Aggregator {
+	return lifecycle.NewAggregator(db.events, db.deliveries)
+}
+
 func newIntegrationWorker(
 	db workerIntegrationDB,
 	pollInterval time.Duration,
@@ -289,6 +286,7 @@ func newIntegrationWorker(
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   pollInterval,
 			RequestTimeout: 3 * time.Second,
@@ -306,10 +304,7 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
 		if r.Method != http.MethodPost {
@@ -327,10 +322,7 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 			t.Errorf("decode webhook payload: %v", err)
 		}
 		if payload.EventType != "invoice.paid" {
-			t.Errorf(
-				"payload event type = %q; want invoice.paid",
-				payload.EventType,
-			)
+			t.Errorf("payload event type = %q; want invoice.paid", payload.EventType)
 		}
 
 		w.WriteHeader(http.StatusNoContent)
@@ -338,12 +330,8 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
@@ -370,19 +358,13 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
 	}
 	if attempts[0].HTTPStatus != http.StatusNoContent {
-		t.Errorf(
-			"HTTP status = %d; want %d",
-			attempts[0].HTTPStatus, http.StatusNoContent,
-		)
+		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusNoContent)
 	}
 	if attempts[0].Outcome != "delivered" {
 		t.Errorf("outcome = %q; want delivered", attempts[0].Outcome)
 	}
 	if attempts[0].EndpointID != endpointID {
-		t.Errorf(
-			"endpoint_id = %s; want %s",
-			attempts[0].EndpointID.Hex(), endpointID.Hex(),
-		)
+		t.Errorf("endpoint_id = %s; want %s", attempts[0].EndpointID.Hex(), endpointID.Hex())
 	}
 }
 
@@ -393,21 +375,14 @@ func TestWorkerIntegrationSuccessfulDeliveryAndAttemptHistory(t *testing.T) {
 func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
@@ -425,10 +400,7 @@ func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 		t.Fatal("expected next_attempt_at to be set")
 	}
 	if !state.NextAttemptAt.After(time.Now().UTC()) {
-		t.Errorf(
-			"next_attempt_at = %v; want a future time",
-			*state.NextAttemptAt,
-		)
+		t.Errorf("next_attempt_at = %v; want a future time", *state.NextAttemptAt)
 	}
 	if state.LeaseUntil != nil {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
@@ -442,10 +414,7 @@ func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 		t.Fatalf("persisted attempts = %d; want 1", len(attempts))
 	}
 	if attempts[0].HTTPStatus != http.StatusServiceUnavailable {
-		t.Errorf(
-			"HTTP status = %d; want %d",
-			attempts[0].HTTPStatus, http.StatusServiceUnavailable,
-		)
+		t.Errorf("HTTP status = %d; want %d", attempts[0].HTTPStatus, http.StatusServiceUnavailable)
 	}
 	if attempts[0].Outcome != "failed" {
 		t.Errorf("outcome = %q; want failed", attempts[0].Outcome)
@@ -455,21 +424,14 @@ func TestWorkerIntegrationTemporaryFailureSchedulesRetry(t *testing.T) {
 func TestWorkerIntegrationFailsAfterMaximumAttempts(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 1,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 1,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 1)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 1)
 
 	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
@@ -507,14 +469,9 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	const oldLeaseToken = "stale-lease-token"
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, "http://placeholder", "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, "http://placeholder", "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
-	// Mark the delivery as processing with an expired lease.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := db.deliveries.UpdateOne(
@@ -534,23 +491,14 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	}
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
-		// The delivery should already be claimed with a fresh lease
-		// token by the time the webhook runs.
-		requestCtx, requestCancel := context.WithTimeout(
-			r.Context(), 5*time.Second,
-		)
+		requestCtx, requestCancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer requestCancel()
 
 		var d bson.M
-		if err := db.deliveries.FindOne(
-			requestCtx, bson.M{"_id": deliveryID},
-		).Decode(&d); err != nil {
+		if err := db.deliveries.FindOne(requestCtx, bson.M{"_id": deliveryID}).Decode(&d); err != nil {
 			t.Errorf("read delivery during webhook: %v", err)
 			http.Error(w, "test setup failed", http.StatusInternalServerError)
 			return
@@ -568,12 +516,7 @@ func TestWorkerIntegrationReclaimsExpiredLease(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Point the endpoint at our server.
-	_, err = db.endpoints.UpdateOne(
-		ctx,
-		bson.M{"_id": endpointID},
-		bson.M{"$set": bson.M{"url": server.URL}},
-	)
+	_, err = db.endpoints.UpdateOne(ctx, bson.M{"_id": endpointID}, bson.M{"$set": bson.M{"url": server.URL}})
 	if err != nil {
 		t.Fatalf("point endpoint at server: %v", err)
 	}
@@ -602,22 +545,15 @@ func TestWorkerIntegrationDoesNotReclaimActiveLease(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	leaseUntil := time.Now().UTC().Add(5 * time.Minute)
 
@@ -642,10 +578,7 @@ func TestWorkerIntegrationDoesNotReclaimActiveLease(t *testing.T) {
 
 	err = worker.processOne(context.Background())
 	if !errors.Is(err, mongo.ErrNoDocuments) {
-		t.Fatalf(
-			"process active lease error = %v; want mongo.ErrNoDocuments",
-			err,
-		)
+		t.Fatalf("process active lease error = %v; want mongo.ErrNoDocuments", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -661,22 +594,15 @@ func TestWorkerIntegrationFailsExpiredExhaustedLease(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -699,10 +625,7 @@ func TestWorkerIntegrationFailsExpiredExhaustedLease(t *testing.T) {
 
 	err = worker.processOne(context.Background())
 	if !errors.Is(err, mongo.ErrNoDocuments) {
-		t.Fatalf(
-			"process exhausted lease error = %v; want mongo.ErrNoDocuments",
-			err,
-		)
+		t.Fatalf("process exhausted lease error = %v; want mongo.ErrNoDocuments", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -728,12 +651,8 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, "http://127.0.0.1:1", "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, "http://127.0.0.1:1", "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	const workerCount = 16
 	start := make(chan struct{})
@@ -748,9 +667,7 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 			worker := newIntegrationWorker(db, time.Second)
 			<-start
 
-			ctx, cancel := context.WithTimeout(
-				context.Background(), 5*time.Second,
-			)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			claim, err := worker.claim(ctx)
@@ -791,10 +708,7 @@ func TestWorkerIntegrationPreventsDuplicateConcurrentClaims(t *testing.T) {
 		t.Errorf("successful claims = %d; want exactly 1", successes)
 	}
 	if noDocuments != workerCount-1 {
-		t.Errorf(
-			"unsuccessful claims = %d; want %d",
-			noDocuments, workerCount-1,
-		)
+		t.Errorf("unsuccessful claims = %d; want %d", noDocuments, workerCount-1)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -821,22 +735,15 @@ func TestWorkerIntegrationCancellationPreservesRecoverableDelivery(t *testing.T)
 	}
 	defer release()
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(requestStarted)
 		<-releaseHandler
 	}))
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
@@ -871,10 +778,7 @@ func TestWorkerIntegrationCancellationPreservesRecoverableDelivery(t *testing.T)
 		t.Fatal("delivery marked delivered despite no acknowledgement")
 	}
 	if state.Status != StatusProcessing {
-		t.Fatalf(
-			"status = %q; want processing until lease recovery",
-			state.Status,
-		)
+		t.Fatalf("status = %q; want processing until lease recovery", state.Status)
 	}
 	if state.LeaseUntil == nil {
 		t.Fatal("expected the interrupted delivery to retain its lease")
@@ -889,14 +793,9 @@ func TestWorkerIntegrationStaleLeaseTokenCannotOverwrite(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 
-		// Simulate another worker reclaiming the delivery during the
-		// webhook request.
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
@@ -914,12 +813,8 @@ func TestWorkerIntegrationStaleLeaseTokenCannotOverwrite(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
@@ -928,10 +823,7 @@ func TestWorkerIntegrationStaleLeaseTokenCannotOverwrite(t *testing.T) {
 		t.Fatal("expected an error when lease token was replaced")
 	}
 	if !strings.Contains(err.Error(), "no longer owned by this lease") {
-		t.Fatalf(
-			"error = %q; want no longer owned by this lease",
-			err,
-		)
+		t.Fatalf("error = %q; want no longer owned by this lease", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -952,10 +844,7 @@ func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
 	receivedBody := make(chan []byte, 1)
 	receivedHeaders := make(chan http.Header, 1)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read webhook body: %v", err)
@@ -971,12 +860,8 @@ func TestWorkerIntegrationSignsOutboundRequest(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, secret, 3,
-	)
-	insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, secret, 3)
+	insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
@@ -1029,10 +914,7 @@ func TestWorkerIntegrationUnsignedWhenNoSecret(t *testing.T) {
 
 	receivedHeaders := make(chan http.Header, 1)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		receivedHeaders <- r.Header.Clone()
 		w.WriteHeader(http.StatusNoContent)
@@ -1040,12 +922,8 @@ func TestWorkerIntegrationUnsignedWhenNoSecret(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 	if err := worker.processOne(context.Background()); err != nil {
@@ -1055,10 +933,7 @@ func TestWorkerIntegrationUnsignedWhenNoSecret(t *testing.T) {
 	select {
 	case headers := <-receivedHeaders:
 		if headers.Get(security.SignatureHeader) != "" {
-			t.Errorf(
-				"expected no %s header for unsigned endpoint",
-				security.SignatureHeader,
-			)
+			t.Errorf("expected no %s header for unsigned endpoint", security.SignatureHeader)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("webhook was not delivered")
@@ -1072,31 +947,20 @@ func TestWorkerIntegrationUnsignedWhenNoSecret(t *testing.T) {
 func TestWorkerIntegrationMissingEventFailsDelivery(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	// Create a delivery referencing a nonexistent event.
 	missingEventID := bson.NewObjectID()
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, missingEventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, missingEventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
 	err := worker.processOne(context.Background())
 	if !errors.Is(err, mongo.ErrNoDocuments) {
-		t.Fatalf(
-			"process missing-event delivery error = %v; want mongo.ErrNoDocuments",
-			err,
-		)
+		t.Fatalf("process missing-event delivery error = %v; want mongo.ErrNoDocuments", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -1112,14 +976,9 @@ func TestWorkerIntegrationDisabledEndpointFailsDelivery(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, "http://127.0.0.1:1", "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, "http://127.0.0.1:1", "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
-	// Disable the endpoint.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := db.endpoints.UpdateOne(
@@ -1135,10 +994,7 @@ func TestWorkerIntegrationDisabledEndpointFailsDelivery(t *testing.T) {
 
 	err = worker.processOne(context.Background())
 	if !errors.Is(err, mongo.ErrNoDocuments) {
-		t.Fatalf(
-			"process disabled-endpoint delivery error = %v; want mongo.ErrNoDocuments",
-			err,
-		)
+		t.Fatalf("process disabled-endpoint delivery error = %v; want mongo.ErrNoDocuments", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
@@ -1146,10 +1002,7 @@ func TestWorkerIntegrationDisabledEndpointFailsDelivery(t *testing.T) {
 		t.Errorf("status = %q; want failed", state.Status)
 	}
 	if !strings.Contains(state.LastError, "endpoint disabled") {
-		t.Errorf(
-			"last_error = %q; want endpoint disabled",
-			state.LastError,
-		)
+		t.Errorf("last_error = %q; want endpoint disabled", state.LastError)
 	}
 }
 
@@ -1168,6 +1021,7 @@ func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   10 * time.Millisecond,
 			RequestTimeout: 3 * time.Second,
@@ -1231,10 +1085,7 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 		peak    atomic.Int64
 	)
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now := current.Add(1)
 		defer current.Add(-1)
 
@@ -1253,15 +1104,11 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 	}))
 	defer server.Close()
 
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
 
 	for i := 0; i < deliveriesTotal; i++ {
 		eventID := insertWorkerIntegrationEvent(t, db.events)
-		insertWorkerIntegrationDelivery(
-			t, db.deliveries, eventID, endpointID, 3,
-		)
+		insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 	}
 
 	worker := NewWorker(
@@ -1269,6 +1116,7 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   10 * time.Millisecond,
 			RequestTimeout: 5 * time.Second,
@@ -1277,9 +1125,7 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 15*time.Second,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -1303,10 +1149,7 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 
 		select {
 		case <-deadline:
-			t.Fatalf(
-				"only %d/%d deliveries reached delivered state",
-				delivered, deliveriesTotal,
-			)
+			t.Fatalf("only %d/%d deliveries reached delivered state", delivered, deliveriesTotal)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -1316,11 +1159,7 @@ func TestWorkerIntegrationConcurrencyIsBounded(t *testing.T) {
 
 	observedPeak := peak.Load()
 	if observedPeak > int64(workers) {
-		t.Errorf(
-			"observed %d concurrent HTTP requests; "+
-				"concurrency limit is %d",
-			observedPeak, workers,
-		)
+		t.Errorf("observed %d concurrent HTTP requests; concurrency limit is %d", observedPeak, workers)
 	}
 }
 
@@ -1335,10 +1174,7 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 	}
 	defer release()
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(requestStarted)
 		<-releaseHandler
 		w.WriteHeader(http.StatusNoContent)
@@ -1346,18 +1182,15 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 	defer server.Close()
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, server.URL, "", 3,
-	)
-	insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, server.URL, "", 3)
+	insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := NewWorker(
 		db.events,
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   50 * time.Millisecond,
 			RequestTimeout: 5 * time.Second,
@@ -1389,10 +1222,7 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatalf(
-				"in-flight deliveries = %d; want 1 during request",
-				worker.InFlightDeliveries(),
-			)
+			t.Fatalf("in-flight deliveries = %d; want 1 during request", worker.InFlightDeliveries())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1406,10 +1236,7 @@ func TestWorkerIntegrationInFlightTracksProcessing(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			t.Fatalf(
-				"in-flight deliveries = %d; want 0 after release",
-				worker.InFlightDeliveries(),
-			)
+			t.Fatalf("in-flight deliveries = %d; want 0 after release", worker.InFlightDeliveries())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1426,38 +1253,23 @@ func TestWorkerIntegrationReleaseClaimFencedByLeaseToken(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, "http://127.0.0.1:1", "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, "http://127.0.0.1:1", "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
-	stale := Delivery{
-		ID:         deliveryID,
-		LeaseToken: "stale-token",
-	}
+	stale := Delivery{ID: deliveryID, LeaseToken: "stale-token"}
 
-	if err := worker.releaseClaim(
-		context.Background(), stale,
-	); err != nil {
+	if err := worker.releaseClaim(context.Background(), stale); err != nil {
 		t.Fatalf("release stale claim: %v", err)
 	}
 
 	state := readWorkerDeliveryState(t, db.deliveries, deliveryID)
 	if state.Status != StatusPending {
-		t.Errorf(
-			"status = %q; want pending (unchanged)",
-			state.Status,
-		)
+		t.Errorf("status = %q; want pending (unchanged)", state.Status)
 	}
 	if state.Attempts != 0 {
-		t.Errorf(
-			"attempts = %d; want 0 (unchanged)",
-			state.Attempts,
-		)
+		t.Errorf("attempts = %d; want 0 (unchanged)", state.Attempts)
 	}
 }
 
@@ -1465,18 +1277,12 @@ func TestWorkerIntegrationReleaseClaimDoesNotConsumeAttempt(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
 	eventID := insertWorkerIntegrationEvent(t, db.events)
-	endpointID := insertWorkerIntegrationEndpoint(
-		t, db.endpoints, "http://127.0.0.1:1", "", 3,
-	)
-	deliveryID := insertWorkerIntegrationDelivery(
-		t, db.deliveries, eventID, endpointID, 3,
-	)
+	endpointID := insertWorkerIntegrationEndpoint(t, db.endpoints, "http://127.0.0.1:1", "", 3)
+	deliveryID := insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 
 	worker := newIntegrationWorker(db, time.Second)
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	claim, err := worker.claim(ctx)
@@ -1484,9 +1290,7 @@ func TestWorkerIntegrationReleaseClaimDoesNotConsumeAttempt(t *testing.T) {
 		t.Fatalf("claim delivery: %v", err)
 	}
 
-	if err := worker.releaseClaim(
-		context.Background(), claim.Delivery,
-	); err != nil {
+	if err := worker.releaseClaim(context.Background(), claim.Delivery); err != nil {
 		t.Fatalf("release claim: %v", err)
 	}
 
@@ -1495,19 +1299,13 @@ func TestWorkerIntegrationReleaseClaimDoesNotConsumeAttempt(t *testing.T) {
 		t.Errorf("status = %q; want pending", state.Status)
 	}
 	if state.Attempts != 0 {
-		t.Errorf(
-			"attempts = %d; want 0 (release must not consume an attempt)",
-			state.Attempts,
-		)
+		t.Errorf("attempts = %d; want 0 (release must not consume an attempt)", state.Attempts)
 	}
 	if state.LeaseUntil != nil {
 		t.Errorf("lease_until = %v; want unset", state.LeaseUntil)
 	}
 	if state.NextAttemptAt != nil {
-		t.Errorf(
-			"next_attempt_at = %v; want unset (release is not a failure)",
-			state.NextAttemptAt,
-		)
+		t.Errorf("next_attempt_at = %v; want unset", state.NextAttemptAt)
 	}
 	if state.LastError != "" {
 		t.Errorf("last_error = %q; want empty", state.LastError)
@@ -1530,10 +1328,7 @@ func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
 
 	var requestCount atomic.Int64
 
-	server := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1545,9 +1340,7 @@ func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
 
 	for i := 0; i < deliveriesTotal; i++ {
 		eventID := insertWorkerIntegrationEvent(t, db.events)
-		insertWorkerIntegrationDelivery(
-			t, db.deliveries, eventID, endpointID, 3,
-		)
+		insertWorkerIntegrationDelivery(t, db.deliveries, eventID, endpointID, 3)
 	}
 
 	worker := NewWorker(
@@ -1555,6 +1348,7 @@ func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   50 * time.Millisecond,
 			RequestTimeout: 3 * time.Second,
@@ -1563,9 +1357,7 @@ func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), testDuration,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -1578,29 +1370,15 @@ func TestWorkerIntegrationRateLimitEnforced(t *testing.T) {
 
 	observed := requestCount.Load()
 
-	// At rate_limit_rps=2 for 3 seconds, a full burst plus the running
-	// refill allows roughly 2 + 3*2 = 8 requests. Allow generous margin
-	// for scheduler jitter.
 	maxExpected := int64(rateLimitRPS * 5)
 	if observed > maxExpected {
-		t.Errorf(
-			"observed %d requests in %s at %d rps; want at most %d",
-			observed,
-			testDuration,
-			rateLimitRPS,
-			maxExpected,
-		)
+		t.Errorf("observed %d requests in %s at %d rps; want at most %d",
+			observed, testDuration, rateLimitRPS, maxExpected)
 	}
 
-	// The limit must have throttled *something*.
 	if observed >= deliveriesTotal {
-		t.Errorf(
-			"all %d deliveries completed within %s at %d rps; "+
-				"rate limit was not enforced",
-			deliveriesTotal,
-			testDuration,
-			rateLimitRPS,
-		)
+		t.Errorf("all %d deliveries completed within %s at %d rps; rate limit was not enforced",
+			deliveriesTotal, testDuration, rateLimitRPS)
 	}
 }
 
@@ -1620,19 +1398,13 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 		unlimitedCount atomic.Int64
 	)
 
-	limitedServer := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	limitedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limitedCount.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer limitedServer.Close()
 
-	unlimitedServer := httptest.NewServer(http.HandlerFunc(func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	unlimitedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		unlimitedCount.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1647,15 +1419,11 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 
 	for i := 0; i < limitedTotal; i++ {
 		eventID := insertWorkerIntegrationEvent(t, db.events)
-		insertWorkerIntegrationDelivery(
-			t, db.deliveries, eventID, limitedEndpointID, 3,
-		)
+		insertWorkerIntegrationDelivery(t, db.deliveries, eventID, limitedEndpointID, 3)
 	}
 	for i := 0; i < unlimitedTotal; i++ {
 		eventID := insertWorkerIntegrationEvent(t, db.events)
-		insertWorkerIntegrationDelivery(
-			t, db.deliveries, eventID, unlimitedEndpointID, 3,
-		)
+		insertWorkerIntegrationDelivery(t, db.deliveries, eventID, unlimitedEndpointID, 3)
 	}
 
 	worker := NewWorker(
@@ -1663,6 +1431,7 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 		db.endpoints,
 		db.deliveries,
 		db.attempts,
+		newTestAggregator(db),
 		Config{
 			PollInterval:   50 * time.Millisecond,
 			RequestTimeout: 3 * time.Second,
@@ -1671,9 +1440,7 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 		},
 	)
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(), waitFor,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -1682,7 +1449,6 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 		worker.Run(ctx)
 	}()
 
-	// The unlimited endpoint should finish quickly.
 	waitForCondition(
 		t,
 		"unlimited endpoint delivered all events",
@@ -1692,17 +1458,11 @@ func TestWorkerIntegrationRateLimitIndependentEndpoints(t *testing.T) {
 		},
 	)
 
-	// The limited endpoint should still be working, not finished.
 	if limitedCount.Load() >= limitedTotal {
-		t.Errorf(
-			"limited endpoint received %d requests within 3s at %d rps; "+
-				"limit was not enforced",
-			limitedCount.Load(),
-			rateLimitRPS,
-		)
+		t.Errorf("limited endpoint received %d requests within 3s at %d rps; limit was not enforced",
+			limitedCount.Load(), rateLimitRPS)
 	}
 
-	// Wait for the worker to drain and shut down.
 	cancel()
 	<-done
 }

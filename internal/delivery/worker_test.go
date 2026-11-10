@@ -9,7 +9,7 @@ import (
 )
 
 func TestRetryDelay(t *testing.T) {
-	worker := NewWorker(nil, nil, nil, nil, Config{
+	worker := NewWorker(nil, nil, nil, nil, nil, Config{
 		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
@@ -46,7 +46,7 @@ func TestRetryDelay(t *testing.T) {
 }
 
 func TestWorkerDoesNotFollowRedirects(t *testing.T) {
-	worker := NewWorker(nil, nil, nil, nil, Config{
+	worker := NewWorker(nil, nil, nil, nil, nil, Config{
 		PollInterval:   2 * time.Second,
 		RequestTimeout: 10 * time.Second,
 		LeaseDuration:  30 * time.Second,
@@ -161,7 +161,7 @@ func TestValidateConfig(t *testing.T) {
 			cfg := valid
 			tt.modify(&cfg)
 
-			worker := NewWorker(nil, nil, nil, nil, cfg)
+			worker := NewWorker(nil, nil, nil, nil, nil, cfg)
 			err := worker.validateConfig()
 
 			if (err != nil) != tt.wantErr {

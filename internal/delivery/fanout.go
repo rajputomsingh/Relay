@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -18,6 +19,7 @@ type Fanout struct {
 	events     *mongo.Collection
 	endpoints  *mongo.Collection
 	deliveries *mongo.Collection
+	aggregator *lifecycle.Aggregator
 	logger     *slog.Logger
 }
 
@@ -26,6 +28,7 @@ func NewFanout(
 	events *mongo.Collection,
 	endpoints *mongo.Collection,
 	deliveries *mongo.Collection,
+	aggregator *lifecycle.Aggregator,
 	logger *slog.Logger,
 ) *Fanout {
 	if logger == nil {
@@ -35,6 +38,7 @@ func NewFanout(
 		events:     events,
 		endpoints:  endpoints,
 		deliveries: deliveries,
+		aggregator: aggregator,
 		logger:     logger,
 	}
 }
@@ -49,20 +53,11 @@ const (
 // CreateDeliveries inserts one delivery per matching enabled endpoint
 // and records fan-out metadata on the event.
 //
-// Idempotent: deliveries are upserted on (event_id, endpoint_id). Safe to
-// call multiple times for the same event; a recovery pass that re-runs this
-// method will fill in any delivery records that failed to upsert on an
-// earlier attempt without duplicating existing ones.
-//
-// On completion the event is updated with:
-//   - fanout_status: "completed" (all endpoint upserts succeeded) or
-//     "incomplete" (one or more endpoint upserts failed)
-//   - fanout_expected_count: number of enabled endpoints matching the event
-//   - fanout_completed_at: time fan-out finished
-//
-// If zero endpoints matched, fanout_status is still "completed", the
-// expected count is 0, and the caller is expected to terminate the event
-// as no_destination (see handlers.EventsHandler).
+// The lifecycle aggregator is invoked at the end so the parent
+// delivery_status transitions to no_destination (zero matches) or
+// processing (fan-out complete, deliveries pending). Aggregator failures
+// are logged but do not fail the fan-out; the reconciler repairs stale
+// parent states.
 func (f *Fanout) CreateDeliveries(
 	ctx context.Context,
 	eventID bson.ObjectID,
@@ -106,16 +101,12 @@ func (f *Fanout) CreateDeliveries(
 			Status:        StatusPending,
 			Attempts:      0,
 			MaxAttempts:   ep.MaxAttempts,
-			NextAttemptAt: nil, // eligible immediately
+			NextAttemptAt: nil,
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
 
-		filter := bson.M{
-			"event_id":    eventID,
-			"endpoint_id": ep.ID,
-		}
-
+		filter := bson.M{"event_id": eventID, "endpoint_id": ep.ID}
 		update := bson.M{
 			"$setOnInsert": bson.M{
 				"status":       delivery.Status,
@@ -127,10 +118,7 @@ func (f *Fanout) CreateDeliveries(
 		}
 
 		result, err := f.deliveries.UpdateOne(
-			ctx,
-			filter,
-			update,
-			options.UpdateOne().SetUpsert(true),
+			ctx, filter, update, options.UpdateOne().SetUpsert(true),
 		)
 		if err != nil {
 			upsertFailed++
@@ -157,9 +145,6 @@ func (f *Fanout) CreateDeliveries(
 		fanoutStatus = FanoutStatusIncomplete
 	}
 
-	// Record the outcome on the event. This runs even when no endpoint
-	// matched so that a zero-destination event is distinguishable from
-	// an event whose fan-out never ran.
 	setFields := bson.M{
 		"fanout_status":         fanoutStatus,
 		"fanout_expected_count": matched,
@@ -171,6 +156,19 @@ func (f *Fanout) CreateDeliveries(
 		bson.M{"$set": setFields},
 	); err != nil {
 		return fmt.Errorf("record fanout status: %w", err)
+	}
+
+	// Invoke the lifecycle aggregator so parent status reflects fan-out outcome.
+	if f.aggregator != nil {
+		aggregateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := f.aggregator.AggregateEvent(aggregateCtx, eventID); err != nil {
+			f.logger.Error(
+				"lifecycle aggregation failed after fanout",
+				"event_id", eventID.Hex(),
+				"error_type", fmt.Sprintf("%T", err),
+			)
+		}
+		cancel()
 	}
 
 	if matched == 0 {
@@ -208,5 +206,4 @@ func (f *Fanout) CreateDeliveries(
 }
 
 // ErrNoEndpoints indicates that fan-out was invoked with an empty endpoint set.
-// It is only used by callers that wish to distinguish this case.
 var ErrNoEndpoints = errors.New("no enabled endpoints")
