@@ -87,8 +87,10 @@ func main() {
 		attemptsCollection,
 		delivery.Config{
 			Logger:         slog.Default(),
+			PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
 			Concurrency:    cfg.WorkerConcurrency,
 			RequestTimeout: 10 * time.Second,
+			LeaseDuration:  30 * time.Second,
 		},
 	)
 
