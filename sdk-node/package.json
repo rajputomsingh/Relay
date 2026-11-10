@@ -28,6 +28,7 @@
   ],
   "author": "Om Singh Chouhan",
   "license": "Apache-2.0",
+  "packageManager": "pnpm@10.34.9",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0",

@@ -152,6 +152,11 @@ jobs:
       RELAY_API_KEY: "test-key-1234567890-abcdefghijklmnop"
       RELAY_TEST_BASE_URL: "http://localhost:8080"
       RELAY_TEST_API_KEY: "test-key-1234567890-abcdefghijklmnop"
+      # Prevent apt's needrestart from prompting interactively during
+      # package installation, which causes the job to hang and hit the
+      # 10-minute no_output_timeout.
+      NEEDRESTART_MODE: a
+      DEBIAN_FRONTEND: noninteractive
     steps:
       - attach_workspace:
           at: .
@@ -171,7 +176,10 @@ jobs:
           name: Install Node
           command: |
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-            sudo apt-get install -y nodejs
+            sudo -E apt-get install -y \
+              -o Dpkg::Options::=--force-confdef \
+              -o Dpkg::Options::=--force-confold \
+              nodejs
             node --version
             npm --version
 
@@ -184,7 +192,10 @@ jobs:
       - run:
           name: Install Python
           command: |
-            sudo apt-get install -y python3 python3-pip python3-venv
+            sudo -E apt-get install -y \
+              -o Dpkg::Options::=--force-confdef \
+              -o Dpkg::Options::=--force-confold \
+              python3 python3-pip python3-venv
             python3 --version
 
       - run:
@@ -226,9 +237,11 @@ jobs:
           name: Node SDK tests against live Relay
           command: |
             cd ~/project/sdk-node
+            npm install -g pnpm@10.34.9
+            pnpm --version
             pnpm install --frozen-lockfile
             pnpm test
-
+                        
       - run:
           name: Python SDK tests against live Relay
           command: |
