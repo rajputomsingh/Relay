@@ -11,7 +11,7 @@ const testAPIKey = "test-relay-api-key-that-is-at-least-32-chars"
 
 func newEventTestServer() http.Handler {
 	mux := http.NewServeMux()
-	NewEventsHandler(nil, testAPIKey, nil).Register(mux)
+	NewEventsHandler(nil, nil, testAPIKey, nil, nil).Register(mux)
 	return mux
 }
 
@@ -217,8 +217,7 @@ func TestReplayEventRejectsInvalidRequests(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mux := http.NewServeMux()
-			NewEventsHandler(nil, testAPIKey, nil).Register(mux)
-
+			NewEventsHandler(nil, nil, testAPIKey, nil, nil).Register(mux)
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			if tt.apiKey != "" {
 				req.Header.Set("Authorization", "Bearer "+tt.apiKey)

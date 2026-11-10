@@ -2,197 +2,353 @@ package handlers
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/delivery"
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// noopFanout satisfies FanoutService without touching the database.
-// It lets replay integration tests exercise the replay path while
-// keeping the fan-out itself inert.
-type noopFanout struct{}
-
-func (noopFanout) CreateDeliveries(
-	_ context.Context,
-	_ bson.ObjectID,
-	_ string,
-	_ string,
-) error {
-	return nil
+func getTestMongoURI() string {
+	return os.Getenv("MONGODB_TEST_URI")
 }
 
-func insertReplayIntegrationEvent(
-	t *testing.T,
-	collection *mongo.Collection,
-	id bson.ObjectID,
-	status string,
-) {
+func connectTestDB(t *testing.T, dbName string) (*mongo.Client, *mongo.Database) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	uri := getTestMongoURI()
+	if uri == "" {
+		t.Skip("MONGODB_TEST_URI not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("connect mongo: %v", err)
+	}
+	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(ctx)
+		t.Fatalf("ping mongo: %v", err)
+	}
+
+	db := client.Database(dbName)
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_ = db.Drop(cleanupCtx)
+		_ = client.Disconnect(cleanupCtx)
+	})
+
+	return client, db
+}
+
+type replayFixture struct {
+	db         *mongo.Database
+	events     *mongo.Collection
+	endpoints  *mongo.Collection
+	deliveries *mongo.Collection
+	attempts   *mongo.Collection
+	handler    *EventsHandler
+	worker     *delivery.Worker
+	eventID    bson.ObjectID
+}
+
+func newReplayFixture(
+	t *testing.T,
+	dbName string,
+	deliveredCount, failedCount int,
+) *replayFixture {
+	t.Helper()
+
+	_, db := connectTestDB(t, dbName)
+
+	events := db.Collection("events")
+	endpointColl := db.Collection("endpoints")
+	deliveries := db.Collection("deliveries")
+	attempts := db.Collection("delivery_attempts")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
-	event := bson.M{
-		"_id":                 id,
-		"source":              "replay-integration-test",
-		"event_type":          "test.replay",
-		"data":                bson.M{"test": true},
-		"idempotency_key":     "replay-" + id.Hex(),
-		"received_at":         now,
-		"status":              "accepted",
-		"delivery_status":     status,
-		"delivery_attempts":   3,
-		"failed_at":           now,
-		"last_delivery_error": "integration test failure",
-		"lease_until":         now.Add(time.Minute),
+
+	endpointID := bson.NewObjectID()
+	if _, err := endpointColl.InsertOne(ctx, bson.M{
+		"_id":          endpointID,
+		"name":         "replay-" + endpointID.Hex(),
+		"url":          srv.URL,
+		"enabled":      true,
+		"max_attempts": 3,
+		"created_at":   now,
+		"updated_at":   now,
+	}); err != nil {
+		t.Fatalf("seed endpoint: %v", err)
 	}
 
-	if status == "delivered" {
-		event["delivered_at"] = now
+	eventID := bson.NewObjectID()
+	if _, err := events.InsertOne(ctx, bson.M{
+		"_id":                   eventID,
+		"source":                "replay-test",
+		"event_type":            "test.replay",
+		"data":                  bson.M{"test": true},
+		"idempotency_key":       "replay-" + eventID.Hex(),
+		"received_at":           now,
+		"status":                "accepted",
+		"delivery_status":       lifecycle.StatusFailed,
+		"delivery_attempts":     deliveredCount + failedCount,
+		"fanout_status":         "completed",
+		"fanout_expected_count": deliveredCount + failedCount,
+		"fanout_completed_at":   now,
+	}); err != nil {
+		t.Fatalf("seed event: %v", err)
 	}
 
-	if _, err := collection.InsertOne(ctx, event); err != nil {
-		t.Fatalf("insert replay fixture: %v", err)
+	for i := 0; i < deliveredCount; i++ {
+		epID := bson.NewObjectID()
+		if _, err := endpointColl.InsertOne(ctx, bson.M{
+			"_id":          epID,
+			"name":         "delivered-" + epID.Hex(),
+			"url":          srv.URL,
+			"enabled":      true,
+			"max_attempts": 3,
+			"created_at":   now,
+			"updated_at":   now,
+		}); err != nil {
+			t.Fatalf("seed delivered endpoint: %v", err)
+		}
+		if _, err := deliveries.InsertOne(ctx, bson.M{
+			"_id":          bson.NewObjectID(),
+			"event_id":     eventID,
+			"endpoint_id":  epID,
+			"status":       "delivered",
+			"attempts":     1,
+			"max_attempts": 3,
+			"delivered_at": now,
+			"created_at":   now,
+			"updated_at":   now,
+		}); err != nil {
+			t.Fatalf("seed delivered child: %v", err)
+		}
+	}
+
+	for i := 0; i < failedCount; i++ {
+		if _, err := deliveries.InsertOne(ctx, bson.M{
+			"_id":          bson.NewObjectID(),
+			"event_id":     eventID,
+			"endpoint_id":  endpointID,
+			"status":       "failed",
+			"attempts":     3,
+			"max_attempts": 3,
+			"failed_at":    now,
+			"last_error":   "prior failure",
+			"created_at":   now,
+			"updated_at":   now,
+		}); err != nil {
+			t.Fatalf("seed failed child: %v", err)
+		}
+	}
+
+	aggregator := lifecycle.NewAggregator(events, deliveries)
+	worker := delivery.NewWorker(
+		events, endpointColl, deliveries, attempts, aggregator,
+		delivery.Config{
+			PollInterval:   50 * time.Millisecond,
+			RequestTimeout: 3 * time.Second,
+			LeaseDuration:  30 * time.Second,
+			Concurrency:    1,
+		},
+	)
+
+	handler := NewEventsHandler(events, deliveries, testAPIKey, nil, aggregator)
+
+	return &replayFixture{
+		db:         db,
+		events:     events,
+		endpoints:  endpointColl,
+		deliveries: deliveries,
+		attempts:   attempts,
+		handler:    handler,
+		worker:     worker,
+		eventID:    eventID,
 	}
 }
 
-func serveReplayIntegrationRequest(
-	mux http.Handler,
-	id bson.ObjectID,
-) *httptest.ResponseRecorder {
+func (f *replayFixture) serveReplay(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	f.handler.Register(mux)
 	req := httptest.NewRequest(
 		http.MethodPost,
-		"/v1/events/"+id.Hex()+"/replay",
+		"/v1/events/"+f.eventID.Hex()+"/replay",
 		nil,
 	)
 	req.Header.Set("Authorization", "Bearer "+testAPIKey)
-
-	recorder := httptest.NewRecorder()
-	mux.ServeHTTP(recorder, req)
-	return recorder
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
 }
 
-func TestReplayIntegrationSuccessPreservesEventIdentity(t *testing.T) {
-	db, _ := newMongoInspectionIntegration(t)
-	collection := db.Collection("events")
-	id := bson.NewObjectID()
+func TestReplayRequeuesFailedChildrenOnly(t *testing.T) {
+	f := newReplayFixture(t, "relay_replay_requeue_only", 2, 1)
+	ctx := context.Background()
 
-	insertReplayIntegrationEvent(t, collection, id, "failed")
-
-	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
-
-	recorder := serveReplayIntegrationRequest(mux, id)
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d: %s", recorder.Code, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), `"replay_queued"`) {
-		t.Fatalf("expected replay_queued response, got %s", recorder.Body.String())
+	rec := f.serveReplay(t)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if n, _ := resp["deliveries_requeued"].(float64); int(n) != 1 {
+		t.Errorf("deliveries_requeued = %v, want 1", resp["deliveries_requeued"])
+	}
+
+	deliveredCount, _ := f.deliveries.CountDocuments(ctx, bson.M{
+		"event_id": f.eventID, "status": "delivered",
+	})
+	if deliveredCount != 2 {
+		t.Errorf("delivered children = %d, want 2 (untouched)", deliveredCount)
+	}
+
+	pendingCount, _ := f.deliveries.CountDocuments(ctx, bson.M{
+		"event_id": f.eventID, "status": "pending",
+	})
+	if pendingCount != 1 {
+		t.Errorf("pending children = %d, want 1", pendingCount)
+	}
+
+	var child bson.M
+	if err := f.deliveries.FindOne(ctx, bson.M{
+		"event_id": f.eventID, "status": "pending",
+	}).Decode(&child); err != nil {
+		t.Fatalf("read pending child: %v", err)
+	}
+	if got, _ := child["replay_cycle"].(int32); got != 1 {
+		t.Errorf("child replay_cycle = %v, want 1", got)
+	}
+	if got, _ := child["attempts"].(int32); got != 0 {
+		t.Errorf("child attempts = %v, want 0 (reset)", got)
+	}
+
+	var parent bson.M
+	if err := f.events.FindOne(ctx, bson.M{"_id": f.eventID}).Decode(&parent); err != nil {
+		t.Fatalf("read parent: %v", err)
+	}
+	status, _ := parent["delivery_status"].(string)
+	if status != lifecycle.StatusProcessing && status != lifecycle.StatusPending {
+		t.Errorf("parent status = %q, want processing or pending", status)
+	}
+	if got, _ := parent["replay_count"].(int32); got != 1 {
+		t.Errorf("replay_count = %v, want 1", got)
+	}
+}
+
+func TestReplayEndToEndDeliversRequeuedChildren(t *testing.T) {
+	f := newReplayFixture(t, "relay_replay_end_to_end", 1, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	var event bson.M
-	if err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&event); err != nil {
-		t.Fatalf("read replayed event: %v", err)
+	rec := f.serveReplay(t)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	if event["delivery_status"] != "pending" {
-		t.Errorf("delivery_status = %v, want pending", event["delivery_status"])
-	}
-	if got := fmt.Sprint(event["delivery_attempts"]); got != "0" {
-		t.Errorf("delivery_attempts = %s, want 0", got)
-	}
-	if event["idempotency_key"] != "replay-"+id.Hex() {
-		t.Errorf("idempotency_key changed: %v", event["idempotency_key"])
-	}
-	if got := fmt.Sprint(event["replay_count"]); got != "1" {
-		t.Errorf("replay_count = %s, want 1", got)
-	}
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
 
-	// The MongoDB Go driver decodes BSON dates as bson.DateTime.
-	replayedAt, ok := event["last_replayed_at"].(bson.DateTime)
-	if !ok {
-		t.Fatalf(
-			"last_replayed_at is missing or has the wrong type: %T",
-			event["last_replayed_at"],
-		)
-	}
-	if replayedAt <= 0 {
-		t.Errorf("last_replayed_at should be a valid timestamp, got %v", replayedAt)
-	}
+	go f.worker.Run(workerCtx)
 
-	for _, field := range []string{
-		"failed_at",
-		"delivered_at",
-		"last_delivery_error",
-		"lease_until",
-	} {
-		if _, exists := event[field]; exists {
-			t.Errorf("%s should be unset after replay, got %v", field, event[field])
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		delivered, _ := f.deliveries.CountDocuments(ctx, bson.M{
+			"event_id": f.eventID, "status": "delivered",
+		})
+		if delivered == 2 {
+			break
 		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	workerCancel()
+	time.Sleep(100 * time.Millisecond)
+
+	delivered, _ := f.deliveries.CountDocuments(ctx, bson.M{
+		"event_id": f.eventID, "status": "delivered",
+	})
+	if delivered != 2 {
+		t.Fatalf("delivered = %d, want 2 (one pre-existing + one replayed)", delivered)
+	}
+
+	var parent bson.M
+	if err := f.events.FindOne(ctx, bson.M{"_id": f.eventID}).Decode(&parent); err != nil {
+		t.Fatalf("read parent: %v", err)
+	}
+	if got := parent["delivery_status"]; got != lifecycle.StatusDelivered {
+		t.Errorf("parent status = %v, want delivered", got)
 	}
 }
 
-func TestReplayIntegrationRejectsIneligibleStates(t *testing.T) {
-	db, _ := newMongoInspectionIntegration(t)
-	collection := db.Collection("events")
+func TestReplayRejectsIneligibleStates(t *testing.T) {
+	f := newReplayFixture(t, "relay_replay_ineligible", 1, 0)
+	ctx := context.Background()
 
-	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
-
-	for _, status := range []string{"pending", "processing", "delivered"} {
+	for _, status := range []string{
+		lifecycle.StatusPending,
+		lifecycle.StatusProcessing,
+		lifecycle.StatusDelivered,
+		lifecycle.StatusDisabled,
+		lifecycle.StatusNoDestination,
+	} {
 		t.Run(status, func(t *testing.T) {
-			id := bson.NewObjectID()
-			insertReplayIntegrationEvent(t, collection, id, status)
-
-			recorder := serveReplayIntegrationRequest(mux, id)
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf(
-					"expected 409 for %s event, got %d: %s",
-					status,
-					recorder.Code,
-					recorder.Body.String(),
-				)
+			if _, err := f.events.UpdateOne(
+				ctx,
+				bson.M{"_id": f.eventID},
+				bson.M{"$set": bson.M{"delivery_status": status}},
+			); err != nil {
+				t.Fatalf("set status: %v", err)
+			}
+			rec := f.serveReplay(t)
+			if rec.Code != http.StatusConflict {
+				t.Errorf("expected 409 for %s, got %d", status, rec.Code)
 			}
 		})
 	}
 }
 
-func TestReplayIntegrationConcurrentRequestsHaveOneWinner(t *testing.T) {
-	db, _ := newMongoInspectionIntegration(t)
-	collection := db.Collection("events")
-	id := bson.NewObjectID()
-
-	insertReplayIntegrationEvent(t, collection, id, "failed")
-
-	mux := http.NewServeMux()
-	NewEventsHandler(collection, testAPIKey, noopFanout{}).Register(mux)
+func TestReplayConcurrentRequestsHaveOneWinner(t *testing.T) {
+	f := newReplayFixture(t, "relay_replay_concurrent", 1, 1)
+	ctx := context.Background()
 
 	const requestCount = 2
 	statuses := make(chan int, requestCount)
 	start := make(chan struct{})
-
 	var wg sync.WaitGroup
 
 	for i := 0; i < requestCount; i++ {
 		wg.Add(1)
-
 		go func() {
 			defer wg.Done()
 			<-start
-
-			recorder := serveReplayIntegrationRequest(mux, id)
-			statuses <- recorder.Code
+			rec := f.serveReplay(t)
+			statuses <- rec.Code
 		}()
 	}
 
@@ -202,38 +358,26 @@ func TestReplayIntegrationConcurrentRequestsHaveOneWinner(t *testing.T) {
 
 	accepted := 0
 	conflicts := 0
-
-	for status := range statuses {
-		switch status {
+	for s := range statuses {
+		switch s {
 		case http.StatusAccepted:
 			accepted++
 		case http.StatusConflict:
 			conflicts++
 		default:
-			t.Errorf("unexpected concurrent replay status: %d", status)
+			t.Errorf("unexpected status: %d", s)
 		}
 	}
 
 	if accepted != 1 || conflicts != 1 {
-		t.Fatalf(
-			"expected one 202 and one 409; got accepted=%d conflicts=%d",
-			accepted,
-			conflicts,
-		)
+		t.Fatalf("expected one 202 + one 409, got %d/%d", accepted, conflicts)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var event bson.M
-	if err := collection.FindOne(ctx, bson.M{"_id": id}).Decode(&event); err != nil {
-		t.Fatalf("read event after concurrent replay: %v", err)
+	var parent bson.M
+	if err := f.events.FindOne(ctx, bson.M{"_id": f.eventID}).Decode(&parent); err != nil {
+		t.Fatalf("read parent: %v", err)
 	}
-
-	if got := fmt.Sprint(event["replay_count"]); got != "1" {
-		t.Errorf("replay_count = %s, want 1", got)
-	}
-	if event["delivery_status"] != "pending" {
-		t.Errorf("delivery_status = %v, want pending", event["delivery_status"])
+	if got, _ := parent["replay_count"].(int32); got != 1 {
+		t.Errorf("replay_count = %v, want exactly 1 (one winner)", got)
 	}
 }

@@ -22,6 +22,7 @@ type Delivery struct {
 	Status        string        `bson:"status"                 json:"status"`
 	Attempts      int           `bson:"attempts"               json:"attempts"`
 	MaxAttempts   int           `bson:"max_attempts"           json:"max_attempts"`
+	ReplayCycle   int           `bson:"replay_cycle,omitempty" json:"replay_cycle,omitempty"`
 	NextAttemptAt *time.Time    `bson:"next_attempt_at,omitempty" json:"next_attempt_at,omitempty"`
 	LeaseUntil    *time.Time    `bson:"lease_until,omitempty"  json:"-"`
 	LeaseToken    string        `bson:"lease_token,omitempty"  json:"-"`

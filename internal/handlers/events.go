@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -28,8 +29,10 @@ type FanoutService interface {
 
 type EventsHandler struct {
 	collection *mongo.Collection
+	deliveries *mongo.Collection
 	apiKey     string
 	fanout     FanoutService
+	aggregator *lifecycle.Aggregator
 }
 
 type createEventRequest struct {
@@ -40,13 +43,17 @@ type createEventRequest struct {
 
 func NewEventsHandler(
 	collection *mongo.Collection,
+	deliveries *mongo.Collection,
 	apiKey string,
 	fanout FanoutService,
+	aggregator *lifecycle.Aggregator,
 ) *EventsHandler {
 	return &EventsHandler{
 		collection: collection,
+		deliveries: deliveries,
 		apiKey:     apiKey,
 		fanout:     fanout,
+		aggregator: aggregator,
 	}
 }
 
