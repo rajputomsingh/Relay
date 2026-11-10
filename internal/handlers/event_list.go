@@ -121,6 +121,20 @@ func encodeEventListCursor(cursor eventListCursor) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
+// list godoc
+// @Summary      List events
+// @Description  Returns a paginated list of events, newest first.
+// @Tags         events
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        delivery_status  query  string  false  "Filter by parent delivery_status (pending, processing, delivered, failed, disabled, no_destination)"
+// @Param        limit            query  int     false  "Page size (1-100, default 50)"
+// @Param        cursor           query  string  false  "Pagination cursor from a previous response"
+// @Success      200  {object}  eventListResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/events [get]
 func (h *EventsListHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return

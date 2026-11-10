@@ -123,6 +123,16 @@ func (h *MetricsHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/metrics", h.serve)
 }
 
+// serve godoc
+// @Summary      Prometheus metrics
+// @Description  Exposes Prometheus metrics in text exposition format.
+// @Tags         metrics
+// @Produce      text/plain
+// @Security     ApiKeyAuth
+// @Success      200  {string}  string  "Prometheus metrics in text format"
+// @Failure      401  {string}  string  "Unauthorized"
+// @Failure      503  {string}  string  "Service Unavailable"
+// @Router       /metrics [get]
 func (h *MetricsHandler) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

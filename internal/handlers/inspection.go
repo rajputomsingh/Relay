@@ -176,7 +176,19 @@ func (h *InspectionHandler) authorized(w http.ResponseWriter, r *http.Request) b
 func parseEventID(r *http.Request) (bson.ObjectID, error) {
 	return bson.ObjectIDFromHex(r.PathValue("id"))
 }
-
+// getEvent godoc
+// @Summary      Inspect an event
+// @Description  Returns the current state of an event, including its parent delivery_status derived by the lifecycle aggregator.
+// @Tags         events
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id  path  string  true  "Event ID (MongoDB ObjectID hex)"
+// @Success      200  {object}  eventInspectionResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/events/{id} [get]
 func (h *InspectionHandler) getEvent(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -224,7 +236,21 @@ func (h *InspectionHandler) getEvent(w http.ResponseWriter, r *http.Request) {
 		LastReplayedAt:   event.LastReplayedAt,
 	})
 }
-
+// getAttempts godoc
+// @Summary      List delivery attempts
+// @Description  Returns the attempt history for an event, newest first.
+// @Tags         events
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id      path   string  true   "Event ID (MongoDB ObjectID hex)"
+// @Param        limit   query  int     false  "Page size (1-100, default 50)"
+// @Param        cursor  query  string  false  "Pagination cursor from a previous response"
+// @Success      200  {object}  attemptHistoryResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/events/{id}/attempts [get]	
 func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -327,6 +353,19 @@ func (h *InspectionHandler) getAttempts(w http.ResponseWriter, r *http.Request) 
 	writeEventJSON(w, http.StatusOK, response)
 }
 
+// getDeliveries godoc
+// @Summary      List deliveries for an event
+// @Description  Returns the current delivery records for an event, one per endpoint.
+// @Tags         events
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id  path  string  true  "Event ID (MongoDB ObjectID hex)"
+// @Success      200  {object}  eventDeliveriesResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/events/{id}/deliveries [get]
 func (h *InspectionHandler) getDeliveries(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
