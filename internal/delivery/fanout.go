@@ -39,9 +39,30 @@ func NewFanout(
 	}
 }
 
-// CreateDeliveries inserts one delivery per matching enabled endpoint.
-// It is safe to call more than once for the same event:
-// deliveries are upserted on (event_id, endpoint_id).
+// Fan-out status values persisted on the event document.
+const (
+	FanoutStatusInProgress = "in_progress"
+	FanoutStatusCompleted  = "completed"
+	FanoutStatusIncomplete = "incomplete"
+)
+
+// CreateDeliveries inserts one delivery per matching enabled endpoint
+// and records fan-out metadata on the event.
+//
+// Idempotent: deliveries are upserted on (event_id, endpoint_id). Safe to
+// call multiple times for the same event; a recovery pass that re-runs this
+// method will fill in any delivery records that failed to upsert on an
+// earlier attempt without duplicating existing ones.
+//
+// On completion the event is updated with:
+//   - fanout_status: "completed" (all endpoint upserts succeeded) or
+//     "incomplete" (one or more endpoint upserts failed)
+//   - fanout_expected_count: number of enabled endpoints matching the event
+//   - fanout_completed_at: time fan-out finished
+//
+// If zero endpoints matched, fanout_status is still "completed", the
+// expected count is 0, and the caller is expected to terminate the event
+// as no_destination (see handlers.EventsHandler).
 func (f *Fanout) CreateDeliveries(
 	ctx context.Context,
 	eventID bson.ObjectID,
@@ -66,6 +87,7 @@ func (f *Fanout) CreateDeliveries(
 
 	matched := 0
 	created := 0
+	upsertFailed := 0
 
 	for cursor.Next(ctx) {
 		var ep endpoints.Endpoint
@@ -111,7 +133,7 @@ func (f *Fanout) CreateDeliveries(
 			options.UpdateOne().SetUpsert(true),
 		)
 		if err != nil {
-			// Do not fail the whole fan-out for one endpoint; log and continue.
+			upsertFailed++
 			f.logger.Error(
 				"fanout delivery upsert failed",
 				"event_id", eventID.Hex(),
@@ -130,6 +152,27 @@ func (f *Fanout) CreateDeliveries(
 		return fmt.Errorf("iterate endpoints: %w", err)
 	}
 
+	fanoutStatus := FanoutStatusCompleted
+	if upsertFailed > 0 {
+		fanoutStatus = FanoutStatusIncomplete
+	}
+
+	// Record the outcome on the event. This runs even when no endpoint
+	// matched so that a zero-destination event is distinguishable from
+	// an event whose fan-out never ran.
+	setFields := bson.M{
+		"fanout_status":         fanoutStatus,
+		"fanout_expected_count": matched,
+		"fanout_completed_at":   now,
+	}
+	if _, err := f.events.UpdateOne(
+		ctx,
+		bson.M{"_id": eventID},
+		bson.M{"$set": setFields},
+	); err != nil {
+		return fmt.Errorf("record fanout status: %w", err)
+	}
+
 	if matched == 0 {
 		f.logger.Warn(
 			"event accepted with no matching endpoints",
@@ -138,6 +181,20 @@ func (f *Fanout) CreateDeliveries(
 			"event_type", eventType,
 		)
 		return nil
+	}
+
+	if upsertFailed > 0 {
+		f.logger.Warn(
+			"fanout completed with failures",
+			"event_id", eventID.Hex(),
+			"matched", matched,
+			"created", created,
+			"failed", upsertFailed,
+		)
+		return fmt.Errorf(
+			"fanout incomplete: %d of %d delivery upserts failed",
+			upsertFailed, matched,
+		)
 	}
 
 	f.logger.Info(
