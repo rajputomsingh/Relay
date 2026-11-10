@@ -138,7 +138,9 @@ On Windows, take the PID from `netstat` and identify the process with `tasklist 
 - In Docker Desktop, enable file sharing for the drive that contains the repository, then restart Docker Desktop.
 - Clone the repository under a shared location such as `C:\Users\<name>\Relay` and run `docker compose` from the repository root so the relative bind-mount paths resolve.
 - If a YAML file was edited on Windows, ensure it uses LF line endings before restarting the monitoring stack.
-- The `mongo_data` volume is a named volume managed by Docker, not a bind mount. If it was created by an incompatible MongoDB version and MongoDB exits on startup, recreate it with the command below. This deletes the stored data.
+- The `mongo_data` volume is a named volume managed by Docker, not a bind mount. If it was created by an incompatible MongoDB version and MongoDB exits on startup, you may need to recreate it.
+
+> **Warning:** Running `docker compose down -v` permanently deletes the `mongo_data` volume and all stored MongoDB data. This cannot be undone. Only run it when you intend to reset the database.
 
 **Diagnostic commands:**
 
@@ -147,7 +149,7 @@ docker compose ps
 docker compose logs mongo
 docker volume ls
 docker volume inspect relay_mongo_data
-docker compose down -v   # removes the mongo_data volume and all MongoDB data
+docker compose down -v   # permanently deletes mongo_data and all MongoDB data
 ```
 
 ### Relay container exits or cannot reach MongoDB
@@ -176,5 +178,25 @@ curl -i http://localhost:8080/healthz
 curl -i http://localhost:8080/readyz
 ```
 
-If you run the monitoring stack, Prometheus is configured to scrape `host.docker.internal:8080`. If Relay is not reachable from the Prometheus container, or `RELAY_API_KEY` does not match the credentials in `prometheus.yml`, the `relay` target will show as down in Prometheus. Check `docker compose -f docker-compose.monitoring.yml logs prometheus` and verify the target under Prometheus **Status > Targets**.
+### Prometheus cannot scrape Relay metrics
+
+**Symptom:** Relay is healthy, but in Prometheus the `relay` target under **Status > Targets** shows as down with an authentication error such as `401 Unauthorized`.
+
+**Likely cause:** The `/metrics` endpoint requires Bearer authentication, and the credential Prometheus sends must match Relay's `RELAY_API_KEY`. `docker-compose.yml` takes the key from the `RELAY_API_KEY` environment variable (via `.env`), while `prometheus.yml` stores its own credential under `scrape_configs[].authorization.credentials`. These are two separate values, so changing one without the other breaks scraping.
+
+**Resolution:**
+- Keep the two values identical: the `RELAY_API_KEY` in `.env` must match the `credentials` value in `prometheus.yml`. When you rotate one, update the other in the same change.
+- `prometheus.yml` ships with a development placeholder under `authorization.credentials`; it is already a valid 32-character value. Either set `RELAY_API_KEY` in `.env` to that same value, or replace both with your own 32+ character secret. There is no automatic link between the two files, so update them together.
+- Relay rejects keys shorter than 32 characters, so the Compose fallback `dev-secret-api-key` cannot be used.
+- Also ensure Relay is reachable from the Prometheus container at `host.docker.internal:8080`. If it is not, the target will show as down even when the credential matches.
+- After editing either file, restart the affected services: `docker compose up -d relay` for the app and `docker compose -f docker-compose.monitoring.yml up -d prometheus` for the scraper.
+
+**Diagnostic commands:**
+
+```bash
+docker compose -f docker-compose.monitoring.yml logs prometheus
+curl -i -H "Authorization: Bearer <your-relay-api-key>" http://localhost:8080/metrics
+```
+
+Then verify the target under Prometheus **Status > Targets**.
 
