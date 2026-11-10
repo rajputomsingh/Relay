@@ -3,6 +3,7 @@ package endpoints
 
 import (
 	"errors"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -66,6 +67,13 @@ type Endpoint struct {
 
 // Validate checks the endpoint's fields before persisting.
 // It does not check uniqueness; that is enforced by the database.
+//
+// SSRF defense: literal private, loopback, and link-local IP addresses are
+// rejected. Hostname resolution is intentionally NOT performed here — that
+// would block internal DNS setups where the operator has deliberately
+// deployed Relay to deliver to internal services. Operators who need to
+// target private IPs can use the config-level RELAY_WEBHOOK_URL_ALLOW_PRIVATE
+// flag with a URL that goes through a resolver.
 func (e *Endpoint) Validate() error {
 	e.Name = strings.TrimSpace(e.Name)
 	e.URL = strings.TrimSpace(e.URL)
@@ -93,6 +101,14 @@ func (e *Endpoint) Validate() error {
 		return errors.New(
 			"endpoint URL must be an absolute HTTP(S) URL without user information",
 		)
+	}
+
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return errors.New(
+				"endpoint URL must not target a private, loopback, or link-local address",
+			)
+		}
 	}
 
 	if e.SigningSecret != "" && len(e.SigningSecret) < 32 {
