@@ -157,4 +157,3 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 
 	r.logger.Debug("reconcile pass complete", "duration_ms", time.Since(start).Milliseconds())
 }
-	
