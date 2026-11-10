@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -26,6 +27,11 @@ var (
 		Help: "Total number of incomplete fan-out events recovered by the reconciler",
 	})
 
+	staleParentsRepaired = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "relay_reconciler_stale_parents_repaired_total",
+		Help: "Total number of stale parent delivery_status values repaired by the reconciler",
+	})
+
 	reconcileDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "relay_reconciler_duration_seconds",
 		Help:    "Time taken for a single reconcile pass",
@@ -34,17 +40,15 @@ var (
 )
 
 // EventFanouter is the interface the reconciler uses to re-trigger fan-out.
-// This allows us to inject the existing matching logic without circular imports.
 type EventFanouter interface {
 	FanOutEvent(ctx context.Context, eventID bson.ObjectID, source, eventType string) error
 }
 
 // Config holds the tunable parameters for the reconciler.
 type Config struct {
-	Interval        time.Duration // How often the loop runs (e.g., 60s)
-	OrphanThreshold time.Duration // How old an event must be to be considered orphaned (e.g., 5m)
+	Interval        time.Duration
+	OrphanThreshold time.Duration
 	// Deprecated: lease recovery now uses delivery.lease_until directly.
-	// Retained for backward compatibility with existing callers; has no effect.
 	StuckThreshold time.Duration
 }
 
@@ -57,19 +61,27 @@ var DefaultConfig = Config{
 
 // Reconciler is the background worker that heals the database.
 type Reconciler struct {
-	store    *Store
-	fanouter EventFanouter
-	config   Config
-	logger   *slog.Logger
+	store      *Store
+	fanouter   EventFanouter
+	aggregator *lifecycle.Aggregator
+	config     Config
+	logger     *slog.Logger
 }
 
 // New creates a new Reconciler.
-func New(store *Store, fanouter EventFanouter, cfg Config, logger *slog.Logger) *Reconciler {
+func New(
+	store *Store,
+	fanouter EventFanouter,
+	aggregator *lifecycle.Aggregator,
+	cfg Config,
+	logger *slog.Logger,
+) *Reconciler {
 	return &Reconciler{
-		store:    store,
-		fanouter: fanouter,
-		config:   cfg,
-		logger:   logger,
+		store:      store,
+		fanouter:   fanouter,
+		aggregator: aggregator,
+		config:     cfg,
+		logger:     logger,
 	}
 }
 
@@ -83,7 +95,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.config.Interval)
 	defer ticker.Stop()
 
-	// Run immediately on startup, then wait for the ticker.
 	r.reconcile(ctx)
 
 	for {
@@ -119,33 +130,23 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	if err != nil {
 		r.logger.Error("failed to find incomplete fanout events", "error", err)
 	} else if len(incompleteFanouts) > 0 {
-		r.logger.Info(
-			"found incomplete fanout events, re-triggering fan-out",
-			"count", len(incompleteFanouts),
-		)
+		r.logger.Info("found incomplete fanout events, re-triggering fan-out", "count", len(incompleteFanouts))
 		for _, evt := range incompleteFanouts {
 			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
-				r.logger.Error(
-					"failed to re-fan-out incomplete event",
-					"event_id", evt.ID.Hex(),
-					"error", err,
-				)
+				r.logger.Error("failed to re-fan-out incomplete event", "event_id", evt.ID.Hex(), "error", err)
 			} else {
 				fanoutRecovered.Inc()
 			}
 		}
 	}
 
-	// 3. Heal orphaned events (received_at < threshold, no deliveries, no
-	// fanout_status). These are events where ingestion succeeded but the
-	// fan-out step never ran.
+	// 3. Heal orphaned events.
 	orphanThreshold := time.Now().UTC().Add(-r.config.OrphanThreshold)
 	orphanedEvents, err := r.store.FindOrphanedEvents(ctx, orphanThreshold)
 	if err != nil {
 		r.logger.Error("failed to find orphaned events", "error", err)
 	} else if len(orphanedEvents) > 0 {
 		r.logger.Info("found orphaned events, triggering fan-out", "count", len(orphanedEvents))
-
 		for _, evt := range orphanedEvents {
 			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
 				r.logger.Error("failed to fan-out orphaned event", "event_id", evt.ID.Hex(), "error", err)
@@ -155,5 +156,39 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		}
 	}
 
+	// 4. Repair stale parent states.
+	if r.aggregator != nil {
+		repaired, err := r.repairStaleParents(ctx, time.Now().UTC())
+		if err != nil {
+			r.logger.Error("failed to repair stale parent states", "error", err)
+		} else if repaired > 0 {
+			r.logger.Info("repaired stale parent delivery_status", "count", repaired)
+			staleParentsRepaired.Add(float64(repaired))
+		}
+	}
+
 	r.logger.Debug("reconcile pass complete", "duration_ms", time.Since(start).Milliseconds())
+}
+
+// repairStaleParents finds events whose delivery_status is inconsistent with
+// their child deliveries and re-runs the aggregator.
+func (r *Reconciler) repairStaleParents(
+	ctx context.Context,
+	now time.Time,
+) (int, error) {
+	candidates, err := r.store.FindStaleParentStates(ctx, now)
+	if err != nil {
+		return 0, err
+	}
+
+	repaired := 0
+	for _, eventID := range candidates {
+		if err := r.aggregator.AggregateEvent(ctx, eventID); err != nil {
+			r.logger.Error("aggregation failed during stale-parent repair",
+				"event_id", eventID.Hex(), "error_type", err)
+			continue
+		}
+		repaired++
+	}
+	return repaired, nil
 }

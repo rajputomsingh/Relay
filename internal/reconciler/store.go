@@ -32,18 +32,10 @@ type EventRecord struct {
 
 // FindOrphanedEvents returns events older than the threshold that have no
 // deliveries AND no fan-out metadata recorded.
-//
-// Events with fanout_status set are excluded because fan-out has already
-// been attempted (successfully or partially). Partial fan-out is handled by
-// FindIncompleteFanout. Events with fanout_status="completed" and
-// fanout_expected_count=0 are healthy no_destination events and must not be
-// re-fanned-out.
 func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
-			"received_at": bson.M{"$lt": threshold},
-			// Exclude events that already have fan-out metadata. Those
-			// are handled by FindIncompleteFanout or are already terminal.
+			"received_at":   bson.M{"$lt": threshold},
 			"fanout_status": bson.M{"$exists": false},
 		}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
@@ -78,11 +70,6 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 // FindIncompleteFanout returns events whose fan-out is incomplete:
 //   - fanout_status == "incomplete" (some delivery upserts failed), or
 //   - fanout_status == "in_progress" and received_at is older than threshold
-//     (ingestion crashed between InsertOne and CreateDeliveries)
-//
-// Events with fanout_status == "completed" are excluded, regardless of
-// expected count. A completed fan-out with expected_count == 0 is a healthy
-// no_destination event, not a defect.
 func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
@@ -116,14 +103,6 @@ func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) (
 
 // ResetExpiredLeases atomically transitions processing deliveries whose
 // lease has expired back to pending.
-//
-// The update is conditional on the delivery still being in `processing`
-// status with `lease_until <= now`. A worker that reclaimed or renewed the
-// lease between discovery and this update will not be affected, because
-// the filter no longer matches its row.
-//
-// Both lease_token and lease_until are cleared so that inspection and
-// metrics do not report a lease for a delivery no worker owns.
 func (s *Store) ResetExpiredLeases(ctx context.Context, now time.Time) (int64, error) {
 	filter := bson.M{
 		"status":      "processing",
@@ -146,4 +125,105 @@ func (s *Store) ResetExpiredLeases(ctx context.Context, now time.Time) (int64, e
 	}
 
 	return result.ModifiedCount, nil
+}
+
+// FindStaleParentStates returns event IDs whose delivery_status disagrees
+// with their child delivery states. The caller is expected to invoke the
+// lifecycle aggregator for each returned event.
+//
+// A parent is stale when:
+//   - delivery_status is pending, processing, or managed, but every
+//     applicable delivery is terminal (delivered or failed); OR
+//   - delivery_status is delivered but at least one child is failed; OR
+//   - delivery_status is failed but every child is delivered.
+//
+// Events with fanout_status in_progress or incomplete are skipped: the
+// fan-out recovery step handles them first. Events with delivery_status
+// "disabled" or "no_destination" are excluded — terminal and independent
+// of child deliveries.
+//
+// Only events whose received_at is older than (now - 1m) are considered,
+// to avoid racing with freshly ingested events whose fan-out has not yet
+// completed.
+func (s *Store) FindStaleParentStates(
+	ctx context.Context,
+	now time.Time,
+) ([]bson.ObjectID, error) {
+	cutoff := now.Add(-1 * time.Minute)
+
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{
+			"received_at":     bson.M{"$lt": cutoff},
+			"delivery_status": bson.M{"$nin": []string{"disabled", "no_destination"}},
+			"fanout_status":   "completed",
+		}}},
+		bson.D{{Key: "$lookup", Value: bson.M{
+			"from":         "deliveries",
+			"localField":   "_id",
+			"foreignField": "event_id",
+			"as":           "children",
+		}}},
+		bson.D{{Key: "$addFields", Value: bson.M{
+			"delivered": bson.M{"$size": bson.M{"$filter": bson.M{
+				"input": "$children",
+				"as":    "c",
+				"cond":  bson.M{"$eq": bson.A{"$$c.status", "delivered"}},
+			}}},
+			"failed": bson.M{"$size": bson.M{"$filter": bson.M{
+				"input": "$children",
+				"as":    "c",
+				"cond":  bson.M{"$eq": bson.A{"$$c.status", "failed"}},
+			}}},
+			"pendingOrProcessing": bson.M{"$size": bson.M{"$filter": bson.M{
+				"input": "$children",
+				"as":    "c",
+				"cond": bson.M{"$in": bson.A{
+					"$$c.status",
+					bson.A{"pending", "processing"},
+				}},
+			}}},
+			"total": bson.M{"$size": "$children"},
+		}}},
+		bson.D{{Key: "$match", Value: bson.M{
+			"pendingOrProcessing": 0,
+			"total":               bson.M{"$gt": 0},
+			"$expr": bson.M{"$or": bson.A{
+				bson.M{"$in": bson.A{
+					"$delivery_status",
+					bson.A{"pending", "processing", "managed"},
+				}},
+				bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$delivery_status", "delivered"}},
+					bson.M{"$gt": bson.A{"$failed", 0}},
+				}},
+				bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$delivery_status", "failed"}},
+					bson.M{"$eq": bson.A{"$failed", 0}},
+				}},
+			}},
+		}}},
+		bson.D{{Key: "$project", Value: bson.M{"_id": 1}}},
+	}
+
+	cursor, err := s.eventsCol.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate stale parent states: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var ids []bson.ObjectID
+	for cursor.Next(ctx) {
+		var row struct {
+			ID bson.ObjectID `bson:"_id"`
+		}
+		if err := cursor.Decode(&row); err != nil {
+			return nil, fmt.Errorf("decode stale parent: %w", err)
+		}
+		ids = append(ids, row.ID)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stale parent states: %w", err)
+	}
+
+	return ids, nil
 }

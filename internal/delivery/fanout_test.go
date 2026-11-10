@@ -197,7 +197,7 @@ func TestFanoutZeroMatchingEndpointsRecordsNoDestination(t *testing.T) {
 	seedFanoutEvent(t, events, eventID, "billing", "invoice.paid")
 	// No endpoints seeded — zero matches expected.
 
-	f := NewFanout(events, endpointsCol, deliveries, nil)
+	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
 	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries returned error for zero-endpoint case: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestFanoutMatchingEndpointsRecordsExpectedCount(t *testing.T) {
 	eventID := bson.NewObjectID()
 	seedFanoutEvent(t, events, eventID, "billing", "invoice.paid")
 
-	f := NewFanout(events, endpointsCol, deliveries, nil)
+	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
 	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestFanoutIdempotentOnRepeatedCall(t *testing.T) {
 	eventID := bson.NewObjectID()
 	seedFanoutEvent(t, events, eventID, "billing", "invoice.paid")
 
-	f := NewFanout(events, endpointsCol, deliveries, nil)
+	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
 	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("first CreateDeliveries: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestFanoutRerecordsStatusOnRecovery(t *testing.T) {
 		t.Fatalf("seed incomplete state: %v", err)
 	}
 
-	f := NewFanout(events, endpointsCol, deliveries, nil)
+	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
 	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries: %v", err)
 	}

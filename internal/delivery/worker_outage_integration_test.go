@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -249,6 +250,7 @@ func TestWorkerRecoversFromMongoOutage(t *testing.T) {
 		endpoints,
 		deliveries,
 		attempts,
+		lifecycle.NewAggregator(events, deliveries),
 		Config{
 			PollInterval:   200 * time.Millisecond,
 			RequestTimeout: 3 * time.Second,

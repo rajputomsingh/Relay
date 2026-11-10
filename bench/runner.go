@@ -182,6 +182,7 @@ func run(
 		endpointsCol,
 		deliveriesCol,
 		attemptsCol,
+		nil, // benchmarks do not exercise the lifecycle aggregator
 		delivery.Config{
 			PollInterval:   benchmarkPollInterval,
 			RequestTimeout: productionRequestTimeout,
