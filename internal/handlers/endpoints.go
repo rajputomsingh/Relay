@@ -89,6 +89,20 @@ type updateEndpointRequest struct {
 // HTTP methods
 // ---------------------------------------------
 
+// create godoc
+// @Summary      Create an endpoint
+// @Description  Registers a new webhook destination. The signing secret cannot be read back after creation.
+// @Tags         endpoints
+// @Accept       json
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        endpoint  body  createEndpointRequest  true  "Endpoint configuration"
+// @Success      201  {object}  endpointResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/endpoints [post]
 func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -133,6 +147,16 @@ func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusCreated, toEndpointResponse(created))
 }
 
+// list godoc
+// @Summary      List endpoints
+// @Description  Returns all registered endpoints, enabled and disabled.
+// @Tags         endpoints
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Success      200  {object}  endpointListResponse
+// @Failure      401  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/endpoints [get]
 func (h *EndpointsHandler) list(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -158,6 +182,19 @@ func (h *EndpointsHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, resp)
 }
 
+// get godoc
+// @Summary      Get an endpoint
+// @Description  Returns a single endpoint by ID.
+// @Tags         endpoints
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id  path  string  true  "Endpoint ID (MongoDB ObjectID hex)"
+// @Success      200  {object}  endpointResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/endpoints/{id} [get]
 func (h *EndpointsHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -180,6 +217,22 @@ func (h *EndpointsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, toEndpointResponse(ep))
 }
 
+// update godoc
+// @Summary      Update an endpoint
+// @Description  Applies a partial update to an endpoint.
+// @Tags         endpoints
+// @Accept       json
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id        path  string                 true  "Endpoint ID (MongoDB ObjectID hex)"
+// @Param        endpoint  body  updateEndpointRequest  true  "Fields to update"
+// @Success      200  {object}  endpointResponse
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/endpoints/{id} [patch]
 func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return
@@ -215,6 +268,19 @@ func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, toEndpointResponse(updated))
 }
 
+// delete godoc
+// @Summary      Disable an endpoint
+// @Description  Soft-deletes an endpoint by setting enabled=false. The endpoint is not removed from the database.
+// @Tags         endpoints
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id  path  string  true  "Endpoint ID (MongoDB ObjectID hex)"
+// @Success      200  {object}  map[string]string
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      404  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/endpoints/{id} [delete]
 func (h *EndpointsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(w, r) {
 		return

@@ -6,7 +6,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/swaggo/http-swagger v1.3.4
-	github.com/swaggo/swag v1.8.1
+	github.com/swaggo/swag v1.16.4
 	go.mongodb.org/mongo-driver/v2 v2.9.2
 )
 

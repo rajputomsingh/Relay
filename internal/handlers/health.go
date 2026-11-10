@@ -64,6 +64,15 @@ func (h *HealthHandler) liveness(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// readiness godoc
+// @Summary      Readiness probe
+// @Description  Returns 200 if the service is ready to accept traffic.
+// @Description  Checks MongoDB connectivity and required index existence.
+// @Tags         health
+// @Produce      json
+// @Success      200  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /readyz [get]
 func (h *HealthHandler) readiness(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{

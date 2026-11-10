@@ -86,7 +86,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body inter
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("User-Agent", "relay-go/0.1.0")
+	req.Header.Set("User-Agent", "relay-go/0.2.0")
 
 	return req, nil
 }

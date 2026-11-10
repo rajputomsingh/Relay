@@ -15,6 +15,19 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// replay godoc
+// @Summary      Replay a failed event
+// @Description  Requeues the failed child deliveries for a failed event. Successful deliveries are untouched. Preserves attempt history across replay cycles.
+// @Tags         events
+// @Produce      json
+// @Security     ApiKeyAuth
+// @Param        id  path  string  true  "Event ID (MongoDB ObjectID hex)"
+// @Success      202  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]string
+// @Failure      401  {object}  map[string]string
+// @Failure      409  {object}  map[string]string
+// @Failure      503  {object}  map[string]string
+// @Router       /v1/events/{id}/replay [post]
 func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeEventJSON(w, http.StatusMethodNotAllowed, map[string]any{

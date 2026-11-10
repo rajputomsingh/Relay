@@ -1,0 +1,5 @@
+﻿minimumReleaseAge: 0
+overrides:
+  rollup: 4.24.0
+onlyBuiltDependencies:
+  - esbuild

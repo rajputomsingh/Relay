@@ -1,6 +1,70 @@
 basePath: /
 definitions:
-  handlers.createEventRequest:
+  github_com_rajputomsingh_relay_internal_endpoints.EventFilter:
+    properties:
+      event_types:
+        items:
+          type: string
+        type: array
+      sources:
+        items:
+          type: string
+        type: array
+    type: object
+  internal_handlers.attemptHistoryResponse:
+    properties:
+      attempts:
+        items:
+          $ref: '#/definitions/internal_handlers.attemptResponse'
+        type: array
+      event_id:
+        type: string
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next_cursor:
+        type: string
+    type: object
+  internal_handlers.attemptResponse:
+    properties:
+      attempt_number:
+        type: integer
+      duration_ms:
+        type: integer
+      endpoint_id:
+        type: string
+      event_id:
+        type: string
+      finished_at:
+        type: string
+      http_status:
+        type: integer
+      id:
+        type: string
+      outcome:
+        type: string
+      started_at:
+        type: string
+    type: object
+  internal_handlers.createEndpointRequest:
+    properties:
+      enabled:
+        type: boolean
+      event_filter:
+        $ref: '#/definitions/github_com_rajputomsingh_relay_internal_endpoints.EventFilter'
+      max_attempts:
+        type: integer
+      name:
+        type: string
+      rate_limit_rps:
+        type: integer
+      signing_secret:
+        type: string
+      url:
+        type: string
+    type: object
+  internal_handlers.createEventRequest:
     properties:
       data:
         additionalProperties: {}
@@ -8,6 +72,130 @@ definitions:
       event_type:
         type: string
       source:
+        type: string
+    type: object
+  internal_handlers.deliveryStateResponse:
+    properties:
+      attempts:
+        type: integer
+      delivered_at:
+        type: string
+      endpoint_id:
+        type: string
+      failed_at:
+        type: string
+      last_error:
+        type: string
+      max_attempts:
+        type: integer
+      next_attempt_at:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  internal_handlers.endpointListResponse:
+    properties:
+      count:
+        type: integer
+      endpoints:
+        items:
+          $ref: '#/definitions/internal_handlers.endpointResponse'
+        type: array
+    type: object
+  internal_handlers.endpointResponse:
+    properties:
+      created_at:
+        type: string
+      disabled_at:
+        type: string
+      enabled:
+        type: boolean
+      event_filter:
+        $ref: '#/definitions/github_com_rajputomsingh_relay_internal_endpoints.EventFilter'
+      has_signing_secret:
+        type: boolean
+      id:
+        type: string
+      max_attempts:
+        type: integer
+      name:
+        type: string
+      rate_limit_rps:
+        type: integer
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  internal_handlers.eventDeliveriesResponse:
+    properties:
+      deliveries:
+        items:
+          $ref: '#/definitions/internal_handlers.deliveryStateResponse'
+        type: array
+      event_id:
+        type: string
+    type: object
+  internal_handlers.eventInspectionResponse:
+    properties:
+      data:
+        additionalProperties: {}
+        type: object
+      delivered_at:
+        type: string
+      delivery_attempts:
+        type: integer
+      delivery_status:
+        type: string
+      event_type:
+        type: string
+      failed_at:
+        type: string
+      id:
+        type: string
+      idempotency_key:
+        type: string
+      last_replayed_at:
+        type: string
+      received_at:
+        type: string
+      replay_count:
+        type: integer
+      source:
+        type: string
+      status:
+        type: string
+    type: object
+  internal_handlers.eventListResponse:
+    properties:
+      events:
+        items:
+          $ref: '#/definitions/internal_handlers.eventInspectionResponse'
+        type: array
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next_cursor:
+        type: string
+    type: object
+  internal_handlers.updateEndpointRequest:
+    properties:
+      enabled:
+        type: boolean
+      event_filter:
+        $ref: '#/definitions/github_com_rajputomsingh_relay_internal_endpoints.EventFilter'
+      max_attempts:
+        type: integer
+      name:
+        type: string
+      rate_limit_rps:
+        type: integer
+      signing_secret:
+        type: string
+      url:
         type: string
     type: object
 host: localhost:8080
@@ -38,7 +226,324 @@ paths:
       summary: Liveness probe
       tags:
       - health
+  /metrics:
+    get:
+      description: Exposes Prometheus metrics in text exposition format.
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Prometheus metrics in text format
+          schema:
+            type: string
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
+        "503":
+          description: Service Unavailable
+          schema:
+            type: string
+      security:
+      - ApiKeyAuth: []
+      summary: Prometheus metrics
+      tags:
+      - metrics
+  /readyz:
+    get:
+      description: |-
+        Returns 200 if the service is ready to accept traffic.
+        Checks MongoDB connectivity and required index existence.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Readiness probe
+      tags:
+      - health
+  /v1/endpoints:
+    get:
+      description: Returns all registered endpoints, enabled and disabled.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.endpointListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: List endpoints
+      tags:
+      - endpoints
+    post:
+      consumes:
+      - application/json
+      description: Registers a new webhook destination. The signing secret cannot
+        be read back after creation.
+      parameters:
+      - description: Endpoint configuration
+        in: body
+        name: endpoint
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.createEndpointRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_handlers.endpointResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Create an endpoint
+      tags:
+      - endpoints
+  /v1/endpoints/{id}:
+    delete:
+      description: Soft-deletes an endpoint by setting enabled=false. The endpoint
+        is not removed from the database.
+      parameters:
+      - description: Endpoint ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Disable an endpoint
+      tags:
+      - endpoints
+    get:
+      description: Returns a single endpoint by ID.
+      parameters:
+      - description: Endpoint ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.endpointResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Get an endpoint
+      tags:
+      - endpoints
+    patch:
+      consumes:
+      - application/json
+      description: Applies a partial update to an endpoint.
+      parameters:
+      - description: Endpoint ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: endpoint
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.updateEndpointRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.endpointResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Update an endpoint
+      tags:
+      - endpoints
   /v1/events:
+    get:
+      description: Returns a paginated list of events, newest first.
+      parameters:
+      - description: Filter by parent delivery_status (pending, processing, delivered,
+          failed, disabled, no_destination)
+        in: query
+        name: delivery_status
+        type: string
+      - description: Page size (1-100, default 50)
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.eventListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: List events
+      tags:
+      - events
     post:
       consumes:
       - application/json
@@ -54,7 +559,7 @@ paths:
         name: event
         required: true
         schema:
-          $ref: '#/definitions/handlers.createEventRequest'
+          $ref: '#/definitions/internal_handlers.createEventRequest'
       produces:
       - application/json
       responses:
@@ -78,6 +583,197 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Submit an event
+      tags:
+      - events
+  /v1/events/{id}:
+    get:
+      description: Returns the current state of an event, including its parent delivery_status
+        derived by the lifecycle aggregator.
+      parameters:
+      - description: Event ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.eventInspectionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Inspect an event
+      tags:
+      - events
+  /v1/events/{id}/attempts:
+    get:
+      description: Returns the attempt history for an event, newest first.
+      parameters:
+      - description: Event ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size (1-100, default 50)
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination cursor from a previous response
+        in: query
+        name: cursor
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.attemptHistoryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: List delivery attempts
+      tags:
+      - events
+  /v1/events/{id}/deliveries:
+    get:
+      description: Returns the current delivery records for an event, one per endpoint.
+      parameters:
+      - description: Event ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.eventDeliveriesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: List deliveries for an event
+      tags:
+      - events
+  /v1/events/{id}/replay:
+    post:
+      description: Requeues the failed child deliveries for a failed event. Successful
+        deliveries are untouched. Preserves attempt history across replay cycles.
+      parameters:
+      - description: Event ID (MongoDB ObjectID hex)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Replay a failed event
       tags:
       - events
 securityDefinitions:
