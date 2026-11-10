@@ -398,6 +398,7 @@ func (w *Worker) processOne(ctx context.Context) error {
 			EventID:       event.ID,
 			EndpointID:    endpoint.ID,
 			AttemptNumber: delivery.Attempts + 1,
+			ReplayCycle:   delivery.ReplayCycle,
 			StartedAt:     startedAt,
 			FinishedAt:    finishedAt,
 			DurationMS:    durationMS,

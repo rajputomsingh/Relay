@@ -114,8 +114,10 @@ func main() {
 	)
 	eventsHandler := handlers.NewEventsHandler(
 		eventsCollection,
+		deliveriesCollection,
 		cfg.RelayAPIKey,
 		fanout,
+		aggregator,
 	)
 	eventsHandler.Register(mux)
 
