@@ -48,13 +48,13 @@ func newReconcilerTestDB(t *testing.T, dbName string) *mongo.Database {
 }
 
 func TestFindOrphanedEvents(t *testing.T) {
-	db := newReconcilerTestDB(t, "relay_reconciler_test")
+	db := newReconcilerTestDB(t, "relay_reconciler_orphan_test")
 	ctx := context.Background()
 
 	oldTime := time.Now().UTC().Add(-10 * time.Minute)
-
-	// Orphaned event: old received_at, no deliveries.
 	eventsCol := db.Collection("events")
+
+	// Genuinely orphaned: old received_at, no deliveries, no fanout metadata.
 	eventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         eventID,
@@ -65,7 +65,21 @@ func TestFindOrphanedEvents(t *testing.T) {
 		t.Fatalf("insert event: %v", err)
 	}
 
-	// Normal event: old received_at, one delivery. Should not match.
+	// Has fanout_status — should NOT be treated as orphan (handled by
+	// FindIncompleteFanout or already terminal).
+	fannedOutID := bson.NewObjectID()
+	if _, err := eventsCol.InsertOne(ctx, bson.M{
+		"_id":                   fannedOutID,
+		"source":                "test",
+		"event_type":            "user.created",
+		"received_at":           oldTime,
+		"fanout_status":         "completed",
+		"fanout_expected_count": 0,
+	}); err != nil {
+		t.Fatalf("insert no-destination event: %v", err)
+	}
+
+	// Has a delivery — should not be orphaned.
 	normalEventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         normalEventID,
@@ -82,8 +96,7 @@ func TestFindOrphanedEvents(t *testing.T) {
 		t.Fatalf("insert delivery: %v", err)
 	}
 
-	// Recent event: new received_at, no deliveries. Should not match
-	// because it is younger than the threshold.
+	// Recent event — should not be orphaned (below threshold).
 	recentEventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         recentEventID,
@@ -106,6 +119,99 @@ func TestFindOrphanedEvents(t *testing.T) {
 	}
 	if orphaned[0].ID != eventID {
 		t.Errorf("expected ID %s, got %s", eventID.Hex(), orphaned[0].ID.Hex())
+	}
+}
+
+func TestFindIncompleteFanoutIncompleteStatus(t *testing.T) {
+	db := newReconcilerTestDB(t, "relay_reconciler_fanout_incomplete")
+	ctx := context.Background()
+
+	eventsCol := db.Collection("events")
+
+	// fanout_status: "incomplete" — should be returned regardless of age.
+	incompleteID := bson.NewObjectID()
+	if _, err := eventsCol.InsertOne(ctx, bson.M{
+		"_id":                   incompleteID,
+		"source":                "test",
+		"event_type":            "user.created",
+		"received_at":           time.Now().UTC(),
+		"fanout_status":         "incomplete",
+		"fanout_expected_count": 3,
+	}); err != nil {
+		t.Fatalf("insert incomplete event: %v", err)
+	}
+
+	// fanout_status: "completed" — should NOT be returned.
+	completedID := bson.NewObjectID()
+	if _, err := eventsCol.InsertOne(ctx, bson.M{
+		"_id":                   completedID,
+		"source":                "test",
+		"event_type":            "user.created",
+		"received_at":           time.Now().UTC().Add(-1 * time.Hour),
+		"fanout_status":         "completed",
+		"fanout_expected_count": 0,
+	}); err != nil {
+		t.Fatalf("insert completed event: %v", err)
+	}
+
+	store := NewStore(db)
+	threshold := time.Now().UTC().Add(-5 * time.Minute)
+
+	recovered, err := store.FindIncompleteFanout(ctx, threshold)
+	if err != nil {
+		t.Fatalf("FindIncompleteFanout: %v", err)
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("expected 1 incomplete event, got %d", len(recovered))
+	}
+	if recovered[0].ID != incompleteID {
+		t.Errorf("expected ID %s, got %s", incompleteID.Hex(), recovered[0].ID.Hex())
+	}
+}
+
+func TestFindIncompleteFanoutInProgressOldEnough(t *testing.T) {
+	db := newReconcilerTestDB(t, "relay_reconciler_fanout_inprogress")
+	ctx := context.Background()
+
+	eventsCol := db.Collection("events")
+	oldTime := time.Now().UTC().Add(-10 * time.Minute)
+
+	// in_progress and old — should be returned (ingestion crashed mid-fanout).
+	staleID := bson.NewObjectID()
+	if _, err := eventsCol.InsertOne(ctx, bson.M{
+		"_id":           staleID,
+		"source":        "test",
+		"event_type":    "user.created",
+		"received_at":   oldTime,
+		"fanout_status": "in_progress",
+	}); err != nil {
+		t.Fatalf("insert stale event: %v", err)
+	}
+
+	// in_progress and recent — should NOT be returned (still running).
+	activeID := bson.NewObjectID()
+	if _, err := eventsCol.InsertOne(ctx, bson.M{
+		"_id":           activeID,
+		"source":        "test",
+		"event_type":    "user.created",
+		"received_at":   time.Now().UTC().Add(-30 * time.Second),
+		"fanout_status": "in_progress",
+	}); err != nil {
+		t.Fatalf("insert active event: %v", err)
+	}
+
+	store := NewStore(db)
+	threshold := time.Now().UTC().Add(-5 * time.Minute)
+
+	recovered, err := store.FindIncompleteFanout(ctx, threshold)
+	if err != nil {
+		t.Fatalf("FindIncompleteFanout: %v", err)
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("expected 1 stale in-progress event, got %d", len(recovered))
+	}
+	if recovered[0].ID != staleID {
+		t.Errorf("expected ID %s, got %s", staleID.Hex(), recovered[0].ID.Hex())
 	}
 }
 
@@ -202,8 +308,6 @@ func TestResetExpiredLeasesSkipsNonProcessing(t *testing.T) {
 	now := time.Now().UTC()
 	deliveryID := bson.NewObjectID()
 
-	// Delivered delivery with a stale lease_until. The status gate must
-	// protect it from being reset.
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
 		"status":      "delivered",
@@ -241,8 +345,6 @@ func TestResetExpiredLeasesConcurrentReclaim(t *testing.T) {
 	now := time.Now().UTC()
 	deliveryID := bson.NewObjectID()
 
-	// Seed a processing delivery with an expired lease — the shape
-	// the current (broken) reconciler would reset.
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
 		"status":      "processing",
@@ -253,8 +355,6 @@ func TestResetExpiredLeasesConcurrentReclaim(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Simulate a worker reclaiming the delivery with a fresh lease
-	// BEFORE the reconciler runs.
 	if _, err := db.Collection("deliveries").UpdateOne(
 		ctx,
 		bson.M{"_id": deliveryID},
@@ -266,9 +366,6 @@ func TestResetExpiredLeasesConcurrentReclaim(t *testing.T) {
 		t.Fatalf("reclaim: %v", err)
 	}
 
-	// The reconciler runs. Because lease_until is now in the future,
-	// the atomic filter (`lease_until <= now`) does not match, so
-	// nothing is reset.
 	store := NewStore(db)
 	modified, err := store.ResetExpiredLeases(ctx, now)
 	if err != nil {

@@ -30,11 +30,21 @@ type EventRecord struct {
 	EventType string        `bson:"event_type"`
 }
 
-// FindOrphanedEvents returns events older than the threshold that have no deliveries.
+// FindOrphanedEvents returns events older than the threshold that have no
+// deliveries AND no fan-out metadata recorded.
+//
+// Events with fanout_status set are excluded because fan-out has already
+// been attempted (successfully or partially). Partial fan-out is handled by
+// FindIncompleteFanout. Events with fanout_status="completed" and
+// fanout_expected_count=0 are healthy no_destination events and must not be
+// re-fanned-out.
 func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
 			"received_at": bson.M{"$lt": threshold},
+			// Exclude events that already have fan-out metadata. Those
+			// are handled by FindIncompleteFanout or are already terminal.
+			"fanout_status": bson.M{"$exists": false},
 		}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
 			"from":         "deliveries",
@@ -60,6 +70,45 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 	var events []EventRecord
 	if err := cursor.All(ctx, &events); err != nil {
 		return nil, fmt.Errorf("decode orphaned events: %w", err)
+	}
+
+	return events, nil
+}
+
+// FindIncompleteFanout returns events whose fan-out is incomplete:
+//   - fanout_status == "incomplete" (some delivery upserts failed), or
+//   - fanout_status == "in_progress" and received_at is older than threshold
+//     (ingestion crashed between InsertOne and CreateDeliveries)
+//
+// Events with fanout_status == "completed" are excluded, regardless of
+// expected count. A completed fan-out with expected_count == 0 is a healthy
+// no_destination event, not a defect.
+func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{
+			"$or": bson.A{
+				bson.M{"fanout_status": "incomplete"},
+				bson.M{
+					"fanout_status": "in_progress",
+					"received_at":   bson.M{"$lt": threshold},
+				},
+			},
+		}}},
+		bson.D{{Key: "$project", Value: bson.M{
+			"source":     1,
+			"event_type": 1,
+		}}},
+	}
+
+	cursor, err := s.eventsCol.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate incomplete fanout events: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var events []EventRecord
+	if err := cursor.All(ctx, &events); err != nil {
+		return nil, fmt.Errorf("decode incomplete fanout events: %w", err)
 	}
 
 	return events, nil

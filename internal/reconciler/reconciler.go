@@ -21,6 +21,11 @@ var (
 		Help: "Total number of stuck deliveries reset to pending by the reconciler",
 	})
 
+	fanoutRecovered = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "relay_reconciler_fanout_recovered_total",
+		Help: "Total number of incomplete fan-out events recovered by the reconciler",
+	})
+
 	reconcileDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "relay_reconciler_duration_seconds",
 		Help:    "Time taken for a single reconcile pass",
@@ -99,7 +104,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		reconcileDuration.Observe(time.Since(start).Seconds())
 	}()
 
-	// 1. Heal stuck deliveries
+	// 1. Heal expired delivery leases.
 	resetCount, err := r.store.ResetExpiredLeases(ctx, time.Now().UTC())
 	if err != nil {
 		r.logger.Error("failed to reset expired delivery leases", "error", err)
@@ -108,7 +113,32 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		deliveriesReset.Add(float64(resetCount))
 	}
 
-	// 2. Heal orphaned events
+	// 2. Heal incomplete fan-out.
+	fanoutThreshold := time.Now().UTC().Add(-r.config.OrphanThreshold)
+	incompleteFanouts, err := r.store.FindIncompleteFanout(ctx, fanoutThreshold)
+	if err != nil {
+		r.logger.Error("failed to find incomplete fanout events", "error", err)
+	} else if len(incompleteFanouts) > 0 {
+		r.logger.Info(
+			"found incomplete fanout events, re-triggering fan-out",
+			"count", len(incompleteFanouts),
+		)
+		for _, evt := range incompleteFanouts {
+			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
+				r.logger.Error(
+					"failed to re-fan-out incomplete event",
+					"event_id", evt.ID.Hex(),
+					"error", err,
+				)
+			} else {
+				fanoutRecovered.Inc()
+			}
+		}
+	}
+
+	// 3. Heal orphaned events (received_at < threshold, no deliveries, no
+	// fanout_status). These are events where ingestion succeeded but the
+	// fan-out step never ran.
 	orphanThreshold := time.Now().UTC().Add(-r.config.OrphanThreshold)
 	orphanedEvents, err := r.store.FindOrphanedEvents(ctx, orphanThreshold)
 	if err != nil {
