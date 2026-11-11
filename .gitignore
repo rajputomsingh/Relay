@@ -39,3 +39,4 @@ sdk-python/**/__pycache__/
 
 # Go test binaries
 sdk-go/*.test
+sdk-node/dist/
