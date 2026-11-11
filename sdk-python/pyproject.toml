@@ -5,7 +5,7 @@ description = "Official Python SDK for Relay webhook delivery infrastructure"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "relay-python-sdk", email = "omchouhan227@gmail.com" }]
+authors = [{ name = "Om Singh Chouhan", email = "omchouhan227@gmail.com" }]
 keywords = ["webhooks", "relay", "webhook-delivery"]
 classifiers = [
     "Development Status :: 4 - Beta",
