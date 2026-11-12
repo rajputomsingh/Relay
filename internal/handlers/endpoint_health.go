@@ -8,6 +8,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const endpointHealthTimeout = 5 * time.Second
@@ -153,12 +154,7 @@ func (s *mongoEndpointHealthStore) Health(
 		return endpointHealth{}, err
 	}
 
-	lastSuccess, lastFailure, err := s.deliveryOutcomes(ctx, endpointID)
-	if err != nil {
-		return endpointHealth{}, err
-	}
-
-	consecutive, err := s.consecutiveFailures(ctx, endpointID, lastSuccess)
+	lastSuccess, lastFailure, consecutive, err := s.deliveryHistory(ctx, endpointID)
 	if err != nil {
 		return endpointHealth{}, err
 	}
@@ -212,78 +208,81 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 	return health, nil
 }
 
-func (s *mongoEndpointHealthStore) deliveryOutcomes(
+func (s *mongoEndpointHealthStore) deliveryHistory(
 	ctx context.Context,
 	endpointID bson.ObjectID,
-) (*time.Time, *time.Time, error) {
-	cursor, err := s.deliveries.Aggregate(ctx, mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
+) (*time.Time, *time.Time, int64, error) {
+	cursor, err := s.deliveries.Find(
+		ctx,
+		bson.D{
 			{Key: "endpoint_id", Value: endpointID},
 			{Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{
-				"delivered", "failed",
+				attemptOutcomeDelivered, attemptOutcomeFailed,
 			}}}},
-		}}},
-		bson.D{{Key: "$group", Value: bson.D{
-			{Key: "_id", Value: nil},
-			{Key: "last_success_at", Value: bson.D{{Key: "$max", Value: bson.D{
-				{Key: "$cond", Value: bson.A{
-					bson.D{{Key: "$eq", Value: bson.A{
-						"$status", "delivered",
-					}}},
-					"$delivered_at",
-					nil,
-				}},
-			}}}},
-			{Key: "last_failure_at", Value: bson.D{{Key: "$max", Value: bson.D{
-				{Key: "$cond", Value: bson.A{
-					bson.D{{Key: "$eq", Value: bson.A{
-						"$status", "failed",
-					}}},
-					"$failed_at",
-					nil,
-				}},
-			}}}},
-		}}},
-	})
+		},
+		options.Find().
+			SetSort(bson.D{
+				{Key: "updated_at", Value: -1},
+				{Key: "_id", Value: -1},
+			}).
+			SetProjection(bson.D{
+				{Key: "status", Value: 1},
+				{Key: "delivered_at", Value: 1},
+				{Key: "failed_at", Value: 1},
+				{Key: "updated_at", Value: 1},
+			}),
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("aggregate delivery outcomes: %w", err)
+		return nil, nil, 0, fmt.Errorf("find delivery history: %w", err)
 	}
 	defer cursor.Close(ctx)
 
-	var outcomes []struct {
-		LastSuccessAt *time.Time `bson:"last_success_at"`
-		LastFailureAt *time.Time `bson:"last_failure_at"`
-	}
-	if err := cursor.All(ctx, &outcomes); err != nil {
-		return nil, nil, fmt.Errorf("decode delivery outcomes: %w", err)
-	}
-	if len(outcomes) == 0 {
-		return nil, nil, nil
+	var lastSuccess, lastFailure *time.Time
+	var consecutive int64
+	streakOpen := true
+
+	for cursor.Next(ctx) {
+		var doc struct {
+			Status      string     `bson:"status"`
+			DeliveredAt *time.Time `bson:"delivered_at"`
+			FailedAt    *time.Time `bson:"failed_at"`
+			UpdatedAt   time.Time  `bson:"updated_at"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, nil, 0, fmt.Errorf("decode delivery history: %w", err)
+		}
+
+		switch doc.Status {
+		case attemptOutcomeFailed:
+			if streakOpen {
+				consecutive++
+			}
+			if lastFailure == nil {
+				ts := doc.UpdatedAt
+				if doc.FailedAt != nil {
+					ts = *doc.FailedAt
+				}
+				lastFailure = &ts
+			}
+		case attemptOutcomeDelivered:
+			streakOpen = false
+			if lastSuccess == nil {
+				ts := doc.UpdatedAt
+				if doc.DeliveredAt != nil {
+					ts = *doc.DeliveredAt
+				}
+				lastSuccess = &ts
+			}
+		}
+
+		if lastSuccess != nil && lastFailure != nil {
+			break
+		}
 	}
 
-	return outcomes[0].LastSuccessAt, outcomes[0].LastFailureAt, nil
-}
-
-func (s *mongoEndpointHealthStore) consecutiveFailures(
-	ctx context.Context,
-	endpointID bson.ObjectID,
-	lastSuccess *time.Time,
-) (int64, error) {
-	filter := bson.D{
-		{Key: "endpoint_id", Value: endpointID},
-		{Key: "status", Value: "failed"},
-	}
-	if lastSuccess != nil {
-		filter = append(filter, bson.E{
-			Key:   "failed_at",
-			Value: bson.D{{Key: "$gt", Value: *lastSuccess}},
-		})
+	if err := cursor.Err(); err != nil {
+		return nil, nil, 0, fmt.Errorf("iterate delivery history: %w", err)
 	}
 
-	count, err := s.deliveries.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, fmt.Errorf("count consecutive delivery failures: %w", err)
-	}
-
-	return count, nil
+	return lastSuccess, lastFailure, consecutive, nil
 }
