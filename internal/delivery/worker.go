@@ -46,6 +46,7 @@ type Worker struct {
 
 	healthMu              sync.RWMutex
 	lastProcessedAt       time.Time
+	lastPolledAt          time.Time
 	processingErrorsTotal int64
 	inFlight              atomic.Int64
 }
@@ -153,6 +154,7 @@ func (w *Worker) workerLoop(ctx context.Context) {
 		err := w.processOne(ctx)
 
 		w.healthMu.Lock()
+		w.lastPolledAt = time.Now().UTC()
 		if err == nil {
 			w.lastProcessedAt = time.Now().UTC()
 		} else if !errors.Is(err, mongo.ErrNoDocuments) && ctx.Err() == nil {
@@ -176,6 +178,12 @@ func (w *Worker) LastProcessedAt() time.Time {
 	w.healthMu.RLock()
 	defer w.healthMu.RUnlock()
 	return w.lastProcessedAt
+}
+
+func (w *Worker) LastPolledAt() time.Time {
+	w.healthMu.RLock()
+	defer w.healthMu.RUnlock()
+	return w.lastPolledAt
 }
 
 func (w *Worker) ProcessingErrorsTotal() int64 {
