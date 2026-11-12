@@ -461,6 +461,40 @@ func TestEndpointHealthIntegrationScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("delivered without delivered_at falls back to updated_at", func(t *testing.T) {
+		ep := createEndpoint("missing-delivered-at")
+		updatedAt := now.Add(-5 * time.Minute)
+
+		insertDeliveryWithoutTerminal(ep.ID, bson.NilObjectID, delivery.StatusDelivered, updatedAt)
+
+		resp := getHealth(ep.ID)
+		if resp.LastSuccessAt == nil || resp.LastSuccessAt.UnixMilli() != updatedAt.UnixMilli() {
+			t.Fatalf("unexpected last_success_at: %v", resp.LastSuccessAt)
+		}
+		if resp.LastFailureAt != nil {
+			t.Fatalf("expected nil last_failure_at, got %v", resp.LastFailureAt)
+		}
+		if resp.ConsecutiveFailures != 0 {
+			t.Fatalf("expected 0 consecutive failures, got %d", resp.ConsecutiveFailures)
+		}
+	})
+
+	t.Run("newer success without delivered_at reflected in last_success_at", func(t *testing.T) {
+		ep := createEndpoint("newer-missing-delivered-at")
+		failureAt := now.Add(-30 * time.Minute)
+		olderSuccessAt := now.Add(-10 * time.Minute)
+		latestUpdatedAt := now.Add(-1 * time.Minute)
+
+		insertDelivery(ep.ID, delivery.StatusFailed, failureAt)
+		insertDelivery(ep.ID, delivery.StatusDelivered, olderSuccessAt)
+		insertDeliveryWithoutTerminal(ep.ID, bson.NilObjectID, delivery.StatusDelivered, latestUpdatedAt)
+
+		resp := getHealth(ep.ID)
+		if resp.LastSuccessAt == nil || resp.LastSuccessAt.UnixMilli() != latestUpdatedAt.UnixMilli() {
+			t.Fatalf("unexpected last_success_at: %v", resp.LastSuccessAt)
+		}
+	})
+
 	t.Run("success after consecutive failures resets streak", func(t *testing.T) {
 		ep := createEndpoint("streak-reset")
 		firstFailure := now.Add(-20 * time.Minute)

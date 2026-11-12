@@ -39,8 +39,8 @@ type endpointHealthResponse struct {
 	Successes1h         int64      `json:"successes_1h"`
 	Failures1h          int64      `json:"failures_1h"`
 	ConsecutiveFailures int64      `json:"consecutive_failures"`
-	LastSuccessAt       *time.Time `json:"last_success_at"`
-	LastFailureAt       *time.Time `json:"last_failure_at"`
+	LastSuccessAt       *time.Time `json:"last_success_at" extensions:"x-nullable"`
+	LastFailureAt       *time.Time `json:"last_failure_at" extensions:"x-nullable"`
 }
 
 // EndpointHealthHandler exposes per-endpoint delivery health over HTTP.

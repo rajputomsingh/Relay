@@ -1119,10 +1119,12 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "last_failure_at": {
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "last_success_at": {
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "success_rate_1h": {
                     "type": "number"
