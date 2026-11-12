@@ -89,6 +89,16 @@ func EnsureMultiEndpointIndexes(
 				SetName("idx_delivery_endpoint_status"),
 		},
 		{
+			Keys: bson.D{
+				{Key: "endpoint_id", Value: 1},
+				{Key: "status", Value: 1},
+				{Key: "updated_at", Value: -1},
+				{Key: "_id", Value: -1},
+			},
+			Options: options.Index().
+				SetName("idx_delivery_endpoint_status_updated"),
+		},
+		{
 			Keys: bson.D{{Key: "event_id", Value: 1}},
 			Options: options.Index().
 				SetName("idx_delivery_event"),

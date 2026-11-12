@@ -461,6 +461,76 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/endpoints/{id}/health": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "endpoints"
+                ],
+                "summary": "Get endpoint health",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Endpoint ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.endpointHealthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v1/events": {
             "get": {
                 "security": [
@@ -1033,6 +1103,34 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_handlers.endpointHealthResponse": {
+            "type": "object",
+            "properties": {
+                "attempts_1h": {
+                    "type": "integer"
+                },
+                "consecutive_failures": {
+                    "type": "integer"
+                },
+                "failures_1h": {
+                    "type": "integer"
+                },
+                "last_failure_at": {
+                    "type": "string",
+                    "x-nullable": true
+                },
+                "last_success_at": {
+                    "type": "string",
+                    "x-nullable": true
+                },
+                "success_rate_1h": {
+                    "type": "number"
+                },
+                "successes_1h": {
+                    "type": "integer"
                 }
             }
         },

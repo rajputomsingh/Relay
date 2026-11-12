@@ -310,14 +310,18 @@ func (h *EndpointsHandler) delete(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------
 
 func (h *EndpointsHandler) authorized(w http.ResponseWriter, r *http.Request) bool {
+	return authorizeRequest(w, r, h.apiKey)
+}
+
+func authorizeRequest(w http.ResponseWriter, r *http.Request, apiKey string) bool {
 	const prefix = "Bearer "
 	header := r.Header.Get("Authorization")
 
 	if !strings.HasPrefix(header, prefix) ||
-		h.apiKey == "" ||
+		apiKey == "" ||
 		subtle.ConstantTimeCompare(
 			[]byte(strings.TrimPrefix(header, prefix)),
-			[]byte(h.apiKey),
+			[]byte(apiKey),
 		) != 1 {
 		writeEventJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": "unauthorized",

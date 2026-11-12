@@ -95,6 +95,25 @@ definitions:
       updated_at:
         type: string
     type: object
+  internal_handlers.endpointHealthResponse:
+    properties:
+      attempts_1h:
+        type: integer
+      consecutive_failures:
+        type: integer
+      failures_1h:
+        type: integer
+      last_failure_at:
+        type: string
+        x-nullable: true
+      last_success_at:
+        type: string
+        x-nullable: true
+      success_rate_1h:
+        type: number
+      successes_1h:
+        type: integer
+    type: object
   internal_handlers.endpointListResponse:
     properties:
       count:
@@ -495,6 +514,52 @@ paths:
       security:
       - ApiKeyAuth: []
       summary: Update an endpoint
+      tags:
+      - endpoints
+  /v1/endpoints/{id}/health:
+    get:
+      description: Returns delivery attempts, success rate, consecutive failures,
+        and the latest success/failure timestamps for an endpoint.
+      parameters:
+      - description: Endpoint ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.endpointHealthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Get endpoint health
       tags:
       - endpoints
   /v1/events:

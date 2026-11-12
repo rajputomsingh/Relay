@@ -2,6 +2,7 @@ import { RelayAPIError } from "./errors.js";
 import type {
   CreateEndpointParams,
   Endpoint,
+  EndpointHealthResponse,
   EventInspection,
   EventPayload,
   EventResponse,
@@ -182,6 +183,23 @@ export class Relay {
     return this.request<Endpoint>(
       "GET",
       `/v1/endpoints/${encodeURIComponent(endpointId)}`,
+    );
+  }
+
+  /**
+   * Fetch delivery health for one endpoint.
+   *
+   * Returns one-hour attempt counts and success rate, consecutive
+   * delivery failures, and the latest success/failure timestamps.
+   * Timestamps are null when no corresponding outcome exists.
+   */
+  async getEndpointHealth(
+    endpointId: string,
+  ): Promise<EndpointHealthResponse> {
+    if (!endpointId) throw new Error("endpointId is required");
+    return this.request<EndpointHealthResponse>(
+      "GET",
+      `/v1/endpoints/${encodeURIComponent(endpointId)}/health`,
     );
   }
 
