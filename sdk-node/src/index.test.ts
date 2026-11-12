@@ -204,6 +204,49 @@ describe("Relay", () => {
     expect(resp.endpoints).toEqual([]);
   });
 
+  it("getEndpointHealth requests the endpoint health path and decodes response", async () => {
+    let requestedUrl: string | undefined;
+    const fetchMock = vi.fn(async (url: string) => {
+      requestedUrl = url;
+      return mockResponse(200, {
+        success_rate_1h: 75,
+        attempts_1h: 4,
+        successes_1h: 3,
+        failures_1h: 1,
+        consecutive_failures: 2,
+        last_success_at: "2026-11-11T10:00:00Z",
+        last_failure_at: null,
+      });
+    });
+    const client = new Relay({
+      apiKey,
+      baseUrl,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    const resp = await client.getEndpointHealth("ep_1");
+
+    expect(requestedUrl).toBe("http://test.local/v1/endpoints/ep_1/health");
+    expect(resp.success_rate_1h).toBe(75);
+    expect(resp.attempts_1h).toBe(4);
+    expect(resp.consecutive_failures).toBe(2);
+    expect(resp.last_failure_at).toBeNull();
+  });
+
+  it("getEndpointHealth requires an endpoint id", async () => {
+    const fetchMock = vi.fn();
+    const client = new Relay({
+      apiKey,
+      baseUrl,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.getEndpointHealth("")).rejects.toThrow(
+      /endpointId is required/,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("updateEndpoint sends PATCH with partial body", async () => {
     let method: string | undefined;
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {

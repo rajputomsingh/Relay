@@ -166,3 +166,13 @@ export interface HealthResponse {
   status: string;
   database?: string;
 }
+
+export interface EndpointHealthResponse {
+  success_rate_1h: number;
+  attempts_1h: number;
+  successes_1h: number;
+  failures_1h: number;
+  consecutive_failures: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+}
