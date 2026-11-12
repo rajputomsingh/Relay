@@ -1,4 +1,4 @@
-import { RelayAPIError } from "./errors.js";
+import { relayErrorForStatus } from "./errors.js";
 import type {
   CreateEndpointParams,
   Endpoint,
@@ -83,7 +83,7 @@ export class Relay {
         (parsed as { error?: string } | null)?.error ??
         res.statusText ??
         "unknown error";
-      throw new RelayAPIError(res.status, message, parsed);
+      throw relayErrorForStatus(res.status, message, parsed);
     }
 
     // DELETE endpoints return a small JSON body; all others return JSON too.
