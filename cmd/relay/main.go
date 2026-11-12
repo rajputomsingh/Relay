@@ -110,11 +110,7 @@ func main() {
 		deliveriesCollection,
 		attemptsCollection,
 		aggregator,
-		delivery.Config{
-			Logger:         slog.Default(),
-			Concurrency:    cfg.WorkerConcurrency,
-			RequestTimeout: 10 * time.Second,
-		},
+		workerDeliveryConfig(cfg),
 	)
 
 	// Register HTTP handlers.
@@ -216,6 +212,20 @@ func main() {
 	}
 
 	slog.Info("shutdown complete")
+}
+
+// workerDeliveryConfig maps the environment-backed configuration onto
+// the delivery worker. PollInterval must be a positive duration and
+// LeaseDuration must exceed RequestTimeout, otherwise the worker's
+// config validation rejects it and no deliveries are ever polled.
+func workerDeliveryConfig(cfg config.Config) delivery.Config {
+	return delivery.Config{
+		Logger:         slog.Default(),
+		Concurrency:    cfg.WorkerConcurrency,
+		RequestTimeout: 10 * time.Second,
+		PollInterval:   time.Duration(cfg.WorkerPollSeconds) * time.Second,
+		LeaseDuration:  30 * time.Second,
+	}
 }
 
 // reconcilerFanoutAdapter bridges the Reconciler's interface to the existing Fanout object.
