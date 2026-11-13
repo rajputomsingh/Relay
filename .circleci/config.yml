@@ -3,7 +3,7 @@ version: 2.1
 executors:
   go-executor:
     docker:
-      - image: cimg/go:1.27.0
+      - image: cimg/go:1.23
     resource_class: medium
     working_directory: ~/project
 
@@ -205,7 +205,7 @@ jobs:
             docker compose up -d --build mongo relay
             # Wait for Relay HTTP server (up to 120s)
             for i in $(seq 1 120); do
-              if curl -fsS http://localhost:8080/healthz > /dev/null 2>&1; then
+              if curl -fsS http://localhost:8080/v1/endpoints > /dev/null 2>&1; then
                 echo "Relay HTTP is up."
                 break
               fi
