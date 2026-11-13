@@ -27,6 +27,10 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
+// version is the build version reported by GET /v1/health. Release builds
+// set it with -ldflags "-X main.version=<version>".
+var version = "dev"
+
 // @title Relay API
 // @version 1.0
 // @description Reliable webhook delivery infrastructure.
@@ -119,7 +123,9 @@ func main() {
 	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)
 
 	healthHandler := handlers.NewHealthHandler(client).
-		WithIndexChecker(database.NewIndexChecker(db))
+		WithIndexChecker(database.NewIndexChecker(db)).
+		WithWorker(worker, workerDeliveryConfig(cfg).PollInterval).
+		WithVersion(version)
 	healthHandler.Register(mux)
 
 	fanout := delivery.NewFanout(
