@@ -175,4 +175,10 @@ export interface EndpointHealthResponse {
   consecutive_failures: number;
   last_success_at: string | null;
   last_failure_at: string | null;
+  /** Approximate p50 of successful attempt latencies over the past hour; null without valid samples. */
+  p50_latency_ms: number | null;
+  /** Approximate p95 of successful attempt latencies over the past hour; null without valid samples. */
+  p95_latency_ms: number | null;
+  /** Approximate p99 of successful attempt latencies over the past hour; null without valid samples. */
+  p99_latency_ms: number | null;
 }

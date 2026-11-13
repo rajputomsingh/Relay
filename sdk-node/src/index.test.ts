@@ -225,6 +225,9 @@ describe("Relay", () => {
         consecutive_failures: 2,
         last_success_at: "2026-11-11T10:00:00Z",
         last_failure_at: null,
+        p50_latency_ms: 42,
+        p95_latency_ms: 187,
+        p99_latency_ms: 512,
       });
     });
     const client = new Relay({
@@ -240,6 +243,33 @@ describe("Relay", () => {
     expect(resp.attempts_1h).toBe(4);
     expect(resp.consecutive_failures).toBe(2);
     expect(resp.last_failure_at).toBeNull();
+    expect(resp.p50_latency_ms).toBe(42);
+    expect(resp.p95_latency_ms).toBe(187);
+    expect(resp.p99_latency_ms).toBe(512);
+  });
+
+  it.each([null, 0])("getEndpointHealth preserves latency %s", async (latency) => {
+    const fetchMock = vi.fn(async () =>
+      mockResponse(200, {
+        success_rate_1h: latency === null ? 0 : 100,
+        attempts_1h: latency === null ? 0 : 1,
+        successes_1h: latency === null ? 0 : 1,
+        failures_1h: 0,
+        consecutive_failures: 0,
+        last_success_at: null,
+        last_failure_at: null,
+        p50_latency_ms: latency,
+        p95_latency_ms: latency,
+        p99_latency_ms: latency,
+      }),
+    );
+    const client = new Relay({ apiKey, baseUrl, fetch: fetchMock as typeof fetch });
+
+    const resp = await client.getEndpointHealth("ep_1");
+
+    expect(resp.p50_latency_ms).toBe(latency);
+    expect(resp.p95_latency_ms).toBe(latency);
+    expect(resp.p99_latency_ms).toBe(latency);
   });
 
   it("getEndpointHealth requires an endpoint id", async () => {

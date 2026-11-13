@@ -26,6 +26,9 @@ type endpointHealth struct {
 	ConsecutiveFailures int64
 	LastSuccessAt       *time.Time
 	LastFailureAt       *time.Time
+	P50LatencyMS        *float64
+	P95LatencyMS        *float64
+	P99LatencyMS        *float64
 }
 
 type endpointHealthStore interface {
@@ -41,6 +44,12 @@ type endpointHealthResponse struct {
 	ConsecutiveFailures int64      `json:"consecutive_failures"`
 	LastSuccessAt       *time.Time `json:"last_success_at" extensions:"x-nullable"`
 	LastFailureAt       *time.Time `json:"last_failure_at" extensions:"x-nullable"`
+	// Approximate 50th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
+	P50LatencyMS *float64 `json:"p50_latency_ms" extensions:"x-nullable" example:"42"`
+	// Approximate 95th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
+	P95LatencyMS *float64 `json:"p95_latency_ms" extensions:"x-nullable" example:"187"`
+	// Approximate 99th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
+	P99LatencyMS *float64 `json:"p99_latency_ms" extensions:"x-nullable" example:"512"`
 }
 
 // EndpointHealthHandler exposes per-endpoint delivery health over HTTP.
@@ -78,6 +87,7 @@ func (h *EndpointHealthHandler) Register(mux *http.ServeMux) {
 //
 // @Summary      Get endpoint health
 // @Description  Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.
+// @Description  Latency percentiles are approximate and use successful attempts from the same one-hour window. Attempts without a finished_at timestamp still count as successes but contribute no latency sample. All three percentiles are null when no valid samples exist; a measured zero is 0. Requires MongoDB 7.0+.
 // @Tags         endpoints
 // @Produce      json
 // @Security     ApiKeyAuth
@@ -130,6 +140,9 @@ func toEndpointHealthResponse(health endpointHealth) endpointHealthResponse {
 		ConsecutiveFailures: health.ConsecutiveFailures,
 		LastSuccessAt:       health.LastSuccessAt,
 		LastFailureAt:       health.LastFailureAt,
+		P50LatencyMS:        health.P50LatencyMS,
+		P95LatencyMS:        health.P95LatencyMS,
+		P99LatencyMS:        health.P99LatencyMS,
 	}
 
 	if health.Attempts1h > 0 {
@@ -179,6 +192,18 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: "$outcome"},
 			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+			// Keep every outcome in the counts, but only delivered attempts
+			// contribute latency samples. Missing timestamps produce null,
+			// which $percentile ignores rather than treating as zero.
+			{Key: "latencies", Value: bson.D{{Key: "$percentile", Value: bson.D{
+				{Key: "input", Value: bson.D{{Key: "$cond", Value: bson.A{
+					bson.D{{Key: "$eq", Value: bson.A{"$outcome", attemptOutcomeDelivered}}},
+					bson.D{{Key: "$subtract", Value: bson.A{"$finished_at", "$started_at"}}},
+					nil,
+				}}}},
+				{Key: "p", Value: bson.A{0.5, 0.95, 0.99}},
+				{Key: "method", Value: "approximate"},
+			}}}},
 		}}},
 	})
 	if err != nil {
@@ -189,6 +214,8 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 	var counts []struct {
 		Outcome string `bson:"_id"`
 		Count   int64  `bson:"count"`
+		// Nullable elements preserve the difference between no sample and 0ms.
+		Latencies []*float64 `bson:"latencies"`
 	}
 	if err := cursor.All(ctx, &counts); err != nil {
 		return endpointHealth{}, fmt.Errorf("decode attempt counts: %w", err)
@@ -200,6 +227,12 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 		switch c.Outcome {
 		case attemptOutcomeDelivered:
 			health.Successes1h += c.Count
+			if len(c.Latencies) != 3 {
+				return endpointHealth{}, fmt.Errorf("expected 3 latency percentiles, got %d", len(c.Latencies))
+			}
+			health.P50LatencyMS = c.Latencies[0]
+			health.P95LatencyMS = c.Latencies[1]
+			health.P99LatencyMS = c.Latencies[2]
 		case attemptOutcomeFailed:
 			health.Failures1h += c.Count
 		}
