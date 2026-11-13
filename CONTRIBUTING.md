@@ -48,6 +48,23 @@ git switch -c docs/your-change-here
 
 Use a branch name that describes the work. See [Branch naming](#branch-naming).
 
+### Step 2.5 — Configure CircleCI for Your Fork
+
+To run CircleCI builds for your own fork:
+
+1. [Sign in to CircleCI](https://app.circleci.com/login) with GitHub and select the account or organization that owns your fork.
+2. Find `YOUR_USERNAME/relay` in **Projects**, then choose **Set Up Project → Use Existing Config** where available. CircleCI's setup UI varies by integration; the GitHub OAuth flow may instead offer **Fastest**, which uses an existing configuration file.
+3. Select a branch containing the repository's existing [`.circleci/config.yml`](.circleci/config.yml) and complete the setup using that file. Do not generate a replacement configuration for this step. See CircleCI's [project setup guide](https://circleci.com/docs/guides/getting-started/create-project/#set-up-a-project) for the flow matching your integration.
+4. After committing your changes, push the branch to trigger a build, then check CircleCI's **Pipelines** page for its result. For example, using the branch from Step 2:
+
+   ```bash
+   git push -u origin docs/your-change-here
+   ```
+
+**Missing PR checks?** Your fork's CircleCI project and the upstream repository's fork-PR build settings are separate. Setting up the fork does not guarantee that checks will appear on a PR to `rajputomsingh/relay`.
+
+Ask a maintainer to verify the upstream integration and fork-PR settings. For GitHub OAuth projects, this includes **Build forked pull requests**. CircleCI also documents missing upstream builds when a contributor follows only their personal fork; check whether you should follow `rajputomsingh/relay` instead. See [pull request build settings](https://circleci.com/docs/guides/integration/pull-request-build-settings/#build-pull-requests-from-forked-repositories). The same fork-PR setting is not supported for GitHub App pipelines; see [pipeline integration limitations](https://circleci.com/docs/guides/orchestrate/pipelines/#can-i-trigger-forked-prs-using-pipelines).
+
 ### Step 3 — Set up the environment (10–20 minutes)
 
 Download Go dependencies:

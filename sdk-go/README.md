@@ -182,6 +182,38 @@ fmt.Printf("Status: %s\n", resp.Status)
 | `EventType` | Describes the type of event being published.               |
 | `Data`      | Contains the event payload.                                |
 
+## Endpoint Health
+
+Use `GetEndpointHealth` to retrieve delivery statistics from
+`GET /v1/endpoints/{id}/health`:
+
+```go
+health, err := client.GetEndpointHealth(ctx, "6af2f46f64e24ff56d2b3baa")
+if err != nil {
+    log.Printf("endpoint health request failed: %v", err)
+    return
+}
+
+fmt.Printf("Success rate (past hour): %.2f%%\n", health.SuccessRate1h)
+fmt.Printf("Attempts: %d, successes: %d, failures: %d\n",
+    health.Attempts1h, health.Successes1h, health.Failures1h)
+fmt.Printf("Consecutive failed deliveries: %d\n", health.ConsecutiveFailures)
+if health.LastSuccessAt != nil {
+    fmt.Printf("Last successful delivery: %s\n", health.LastSuccessAt.Format(time.RFC3339))
+}
+if health.LastFailureAt != nil {
+    fmt.Printf("Last failed delivery: %s\n", health.LastFailureAt.Format(time.RFC3339))
+}
+```
+
+This example uses an initialized `client`, a `ctx`, and the standard `fmt`,
+`log`, and `time` packages. The success rate is a percentage from 0 to 100
+(0 when there are no attempts). Attempt counts cover the past hour;
+consecutive failures and the latest timestamps use delivery history.
+`LastSuccessAt` and `LastFailureAt` are `*time.Time` values and are `nil`
+when the API returns `null`. HTTP errors retain the SDK's `*APIError` type;
+use `IsNotFound(err)` for HTTP 404 or `IsUnauthorized(err)` for HTTP 401.
+
 ## Idempotency
 
 The SDK supports idempotency keys when sending events.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // EventFilter selects which events an endpoint receives.
@@ -135,6 +136,46 @@ func (c *Client) GetEndpoint(
 	var resp Endpoint
 	if err := c.do(req, &resp); err != nil {
 		return nil, fmt.Errorf("get endpoint: %w", err)
+	}
+	return &resp, nil
+}
+
+// EndpointHealth contains delivery health statistics for an endpoint.
+// LastSuccessAt and LastFailureAt are nil when no corresponding delivery exists.
+type EndpointHealth struct {
+	SuccessRate1h       float64    `json:"success_rate_1h"`
+	Attempts1h          int64      `json:"attempts_1h"`
+	Successes1h         int64      `json:"successes_1h"`
+	Failures1h          int64      `json:"failures_1h"`
+	ConsecutiveFailures int64      `json:"consecutive_failures"`
+	LastSuccessAt       *time.Time `json:"last_success_at"`
+	LastFailureAt       *time.Time `json:"last_failure_at"`
+}
+
+// GetEndpointHealth returns delivery health statistics for a single endpoint.
+// The success rate and attempt counts cover the past hour; the consecutive
+// failures and latest success/failure timestamps reflect delivery history.
+func (c *Client) GetEndpointHealth(
+	ctx context.Context,
+	endpointID string,
+) (*EndpointHealth, error) {
+	if endpointID == "" {
+		return nil, fmt.Errorf("get endpoint health: endpointID is required")
+	}
+
+	req, err := c.newRequest(
+		ctx,
+		http.MethodGet,
+		"/v1/endpoints/"+url.PathEscape(endpointID)+"/health",
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp EndpointHealth
+	if err := c.do(req, &resp); err != nil {
+		return nil, fmt.Errorf("get endpoint health: %w", err)
 	}
 	return &resp, nil
 }
