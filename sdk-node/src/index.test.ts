@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Relay, RelayAPIError, signWebhookBody } from "./index.js";
+import {
+  BadRequestError,
+  NotFoundError,
+  RateLimitedError,
+  Relay,
+  RelayAPIError,
+  ServerError,
+  signWebhookBody,
+  UnauthorizedError,
+} from "./index.js";
 import { verifyWebhookSignature, SignatureError } from "./signatures.js";
 
 const apiKey = "test-api-key-with-at-least-32-chars";
@@ -310,9 +319,106 @@ describe("Relay", () => {
     const body = '{"event_id":"abc"}';
     const futureTs = Math.floor(Date.now() / 1000) + 600;
     const sig = signWebhookBody(secret, futureTs, body);
-
     expect(() =>
       verifyWebhookSignature(secret, String(futureTs), sig, body),
     ).toThrow(/freshness window/);
+  });
+});
+
+describe("typed error subclasses", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function catchErrorForStatus(
+    status: number,
+    message = "something went wrong",
+  ): Promise<RelayAPIError> {
+    const fetchMock = vi.fn(async () =>
+      mockResponse(status, { error: message }),
+    );
+    const client = new Relay({
+      apiKey,
+      baseUrl,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    try {
+      await client.getEndpointHealth("ep_1");
+    } catch (e) {
+      return e as RelayAPIError;
+    }
+    throw new Error(`expected a ${status} error`);
+  }
+
+  it("maps 400 to BadRequestError", async () => {
+    const err = await catchErrorForStatus(400, "invalid request");
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err.name).toBe("BadRequestError");
+    expect(err.status).toBe(400);
+    expect(err.message).toBe("invalid request");
+    expect(err.body).toEqual({ error: "invalid request" });
+  });
+
+  it("maps 401 to UnauthorizedError", async () => {
+    const err = await catchErrorForStatus(401, "invalid api key");
+    expect(err).toBeInstanceOf(UnauthorizedError);
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err.name).toBe("UnauthorizedError");
+    expect(err.status).toBe(401);
+  });
+
+  it("maps 404 to NotFoundError", async () => {
+    const err = await catchErrorForStatus(404, "endpoint not found");
+    expect(err).toBeInstanceOf(NotFoundError);
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err.name).toBe("NotFoundError");
+    expect(err.status).toBe(404);
+    expect(err.isNotFound()).toBe(true);
+  });
+
+  it("maps 429 to RateLimitedError", async () => {
+    const err = await catchErrorForStatus(429, "rate limit exceeded");
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err.name).toBe("RateLimitedError");
+    expect(err.status).toBe(429);
+    expect(err.isRateLimited()).toBe(true);
+  });
+
+  it.each([500, 503])("maps %i to ServerError", async (status) => {
+    const err = await catchErrorForStatus(status, "internal error");
+    expect(err).toBeInstanceOf(ServerError);
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err.name).toBe("ServerError");
+    expect(err.status).toBe(status);
+    expect(err.isServerError()).toBe(true);
+  });
+
+  it("keeps unmapped statuses as the base RelayAPIError", async () => {
+    const err = await catchErrorForStatus(409, "conflict");
+    expect(err).toBeInstanceOf(RelayAPIError);
+    expect(err).not.toBeInstanceOf(BadRequestError);
+    expect(err).not.toBeInstanceOf(NotFoundError);
+    expect(err.name).toBe("RelayAPIError");
+    expect(err.isConflict()).toBe(true);
+  });
+
+  it("every subclass remains catchable as RelayAPIError", () => {
+    const status = 400;
+    for (const Err of [
+      BadRequestError,
+      UnauthorizedError,
+      NotFoundError,
+      RateLimitedError,
+      ServerError,
+    ]) {
+      const err = new Err(status, "boom");
+      expect(err).toBeInstanceOf(RelayAPIError);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.status).toBe(status);
+      expect(err.message).toBe("boom");
+    }
   });
 });
