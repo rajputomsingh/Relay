@@ -1,0 +1,53 @@
+
+name: Welcome
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  welcome:
+    name: 👋🏻 Welcome contributor
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    # Only run for first-time contributors.
+    if: >-
+      github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' ||
+      github.event.pull_request.author_association == 'FIRST_TIMER'
+
+    steps:
+      - name: Post welcome comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            const body = [
+              `👋🏻 Welcome to Relay, @${pr.user.login}! Thanks for your first contribution.`,
+              '',
+              '**What happens next:**',
+              '',
+              '- CI checks (`🦫 Go`, `📦 Node SDK`, `🏗️ Build`) will run automatically.',
+              '- If a check fails, open its **Details** link, review the logs, and push a fix. CI will run again automatically.',
+              '- A maintainer will review your PR. If you need help, feel free to leave a comment.',
+              '',
+              '**Contributor resources:**',
+              '',
+              `- [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md) — setup and contribution guidelines.`,
+              `- [#81 Contributors Wanted](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/81) — open contribution opportunities.`,
+              `- [Good first issues](https://github.com/${context.repo.owner}/${context.repo.repo}/labels/good%20first%20issue) — beginner-friendly tasks.`,
+              '',
+              'Thanks again for helping make Relay better. We appreciate your contribution!'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body
+            });

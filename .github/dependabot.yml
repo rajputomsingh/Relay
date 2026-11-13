@@ -1,0 +1,66 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+    ignore:
+      # Pin major versions of high-impact dependencies
+      - dependency-name: "go.mongodb.org/mongo-driver/*"
+        update-types: ["version-update:semver-major"]
+
+  # Node SDK
+  - package-ecosystem: "npm"
+    directory: "/sdk-node"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "sdk"
+
+  # Python SDK
+  - package-ecosystem: "pip"
+    directory: "/sdk-python"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "sdk"
+    ignore:
+      # If sdk-python doesn't exist yet, this silently no-ops
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "ci-cd"
+    ignore:
+      # Avoid churn on major version bumps — review manually
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
