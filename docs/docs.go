@@ -468,7 +468,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.",
+                "description": "Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.\nLatency percentiles are approximate and use successful attempts from the same one-hour window. Attempts without a finished_at timestamp still count as successes but contribute no latency sample. All three percentiles are null when no valid samples exist; a measured zero is 0. Requires MongoDB 7.0+.",
                 "produces": [
                     "application/json"
                 ],
@@ -1125,6 +1125,24 @@ const docTemplate = `{
                 "last_success_at": {
                     "type": "string",
                     "x-nullable": true
+                },
+                "p50_latency_ms": {
+                    "description": "Approximate 50th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.",
+                    "type": "number",
+                    "x-nullable": true,
+                    "example": 42
+                },
+                "p95_latency_ms": {
+                    "description": "Approximate 95th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.",
+                    "type": "number",
+                    "x-nullable": true,
+                    "example": 187
+                },
+                "p99_latency_ms": {
+                    "description": "Approximate 99th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.",
+                    "type": "number",
+                    "x-nullable": true,
+                    "example": 512
                 },
                 "success_rate_1h": {
                     "type": "number"

@@ -134,6 +134,11 @@ func TestEndpointHealthNoHistory(t *testing.T) {
 		!strings.Contains(rec.Body.String(), `"last_failure_at":null`) {
 		t.Fatalf("expected null timestamps, got %s", rec.Body.String())
 	}
+	for _, key := range []string{"p50_latency_ms", "p95_latency_ms", "p99_latency_ms"} {
+		if !strings.Contains(rec.Body.String(), `"`+key+`":null`) {
+			t.Fatalf("expected explicit null for %s, got %s", key, rec.Body.String())
+		}
+	}
 
 	var resp endpointHealthResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -153,6 +158,7 @@ func TestEndpointHealthMixedOutcomes(t *testing.T) {
 
 	lastSuccess := now.Add(-15 * time.Minute)
 	lastFailure := now.Add(-5 * time.Minute)
+	latencies := [3]float64{0, 187, 512}
 
 	epStore := &fakeEndpointsStore{getItem: endpoints.Endpoint{ID: id}}
 	healthStore := &fakeEndpointHealthStore{health: endpointHealth{
@@ -162,6 +168,9 @@ func TestEndpointHealthMixedOutcomes(t *testing.T) {
 		ConsecutiveFailures: 3,
 		LastSuccessAt:       &lastSuccess,
 		LastFailureAt:       &lastFailure,
+		P50LatencyMS:        &latencies[0],
+		P95LatencyMS:        &latencies[1],
+		P99LatencyMS:        &latencies[2],
 	}}
 	mux := newEndpointHealthTestMux(
 		epStore, healthStore, func() time.Time { return now },
@@ -193,6 +202,12 @@ func TestEndpointHealthMixedOutcomes(t *testing.T) {
 	}
 	if resp.LastFailureAt == nil || !resp.LastFailureAt.Equal(lastFailure) {
 		t.Fatalf("unexpected last_failure_at: %v", resp.LastFailureAt)
+	}
+
+	for i, got := range []*float64{resp.P50LatencyMS, resp.P95LatencyMS, resp.P99LatencyMS} {
+		if got == nil || *got != latencies[i] {
+			t.Fatalf("latency %d = %v, want %v", i, got, latencies[i])
+		}
 	}
 
 	if healthStore.gotID != id {

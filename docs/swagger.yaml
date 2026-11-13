@@ -109,6 +109,24 @@ definitions:
       last_success_at:
         type: string
         x-nullable: true
+      p50_latency_ms:
+        description: Approximate 50th percentile of successful attempt latencies in
+          milliseconds over the past hour; null when no valid samples exist.
+        example: 42
+        type: number
+        x-nullable: true
+      p95_latency_ms:
+        description: Approximate 95th percentile of successful attempt latencies in
+          milliseconds over the past hour; null when no valid samples exist.
+        example: 187
+        type: number
+        x-nullable: true
+      p99_latency_ms:
+        description: Approximate 99th percentile of successful attempt latencies in
+          milliseconds over the past hour; null when no valid samples exist.
+        example: 512
+        type: number
+        x-nullable: true
       success_rate_1h:
         type: number
       successes_1h:
@@ -518,8 +536,9 @@ paths:
       - endpoints
   /v1/endpoints/{id}/health:
     get:
-      description: Returns delivery attempts, success rate, consecutive failures,
-        and the latest success/failure timestamps for an endpoint.
+      description: |-
+        Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.
+        Latency percentiles are approximate and use successful attempts from the same one-hour window. Attempts without a finished_at timestamp still count as successes but contribute no latency sample. All three percentiles are null when no valid samples exist; a measured zero is 0. Requires MongoDB 7.0+.
       parameters:
       - description: Endpoint ID
         in: path
