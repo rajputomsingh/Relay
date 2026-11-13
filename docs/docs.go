@@ -958,6 +958,32 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/v1/health": {
+            "get": {
+                "description": "Reports the health of the Relay service itself: MongoDB\nreachability, delivery worker state, build version, and uptime.\nReturns 503 when MongoDB is unreachable; the worker is not\nchecked in that case.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Service health",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.serviceHealthResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.serviceHealthResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -1279,6 +1305,26 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "next_cursor": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.serviceHealthResponse": {
+            "type": "object",
+            "properties": {
+                "mongo": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "uptime_seconds": {
+                    "type": "integer"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "worker": {
                     "type": "string"
                 }
             }

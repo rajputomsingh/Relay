@@ -218,6 +218,19 @@ definitions:
       next_cursor:
         type: string
     type: object
+  internal_handlers.serviceHealthResponse:
+    properties:
+      mongo:
+        type: string
+      status:
+        type: string
+      uptime_seconds:
+        type: integer
+      version:
+        type: string
+      worker:
+        type: string
+    type: object
   internal_handlers.updateEndpointRequest:
     properties:
       enabled:
@@ -860,6 +873,27 @@ paths:
       summary: Replay a failed event
       tags:
       - events
+  /v1/health:
+    get:
+      description: |-
+        Reports the health of the Relay service itself: MongoDB
+        reachability, delivery worker state, build version, and uptime.
+        Returns 503 when MongoDB is unreachable; the worker is not
+        checked in that case.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.serviceHealthResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/internal_handlers.serviceHealthResponse'
+      summary: Service health
+      tags:
+      - health
 securityDefinitions:
   ApiKeyAuth:
     in: header
