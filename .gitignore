@@ -22,7 +22,7 @@ coverage.out
 bench/results/*.json
 bench/results/summary.md
 
-# PyPI credentials — never commit
+# PyPI credentials â€” never commit
 .pypi-token
 .pypirc
 .netrc
@@ -40,3 +40,14 @@ sdk-python/**/__pycache__/
 # Go test binaries
 sdk-go/*.test
 sdk-node/dist/
+
+
+# Session scratch files (do not commit)
+issue-bodies/
+*-review.md
+comment-*.md
+msg-*.md
+issue-81-*.md
+pr-*.md
+relay-issues.ps1
+deliveries-index-*.txt
