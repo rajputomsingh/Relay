@@ -96,6 +96,7 @@ Once the server is running, check its health and database connection:
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
+curl http://localhost:8080/v1/health
 ```
 
 If the containers fail to start or Relay cannot reach MongoDB, see the [Docker Compose troubleshooting guide](docs/deployment.md#troubleshooting).
@@ -228,6 +229,30 @@ docker compose -f docker-compose.monitoring.yml up -d
 ```
 
 Health checks, delivery attempt history, graceful shutdown, and lease recovery are also included.
+
+### Service health
+
+`GET /v1/health` reports the health of the Relay service itself and needs no authentication, so load balancers, orchestrators, and uptime monitors can poll it:
+
+```json
+{
+  "status": "ok",
+  "mongo": "ok",
+  "worker": "ok",
+  "version": "dev",
+  "uptime_seconds": 3612
+}
+```
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `status` | `ok`, `degraded`, `down` | `down` when MongoDB is unreachable, `degraded` when the worker is not `ok`, otherwise `ok` |
+| `mongo` | `ok`, `unreachable` | MongoDB answered a ping within 2 seconds |
+| `worker` | `ok`, `stale`, `disabled` | `stale` when the delivery worker has not polled for more than three poll intervals, `disabled` when it never started; omitted when MongoDB is unreachable |
+| `version` | string | build version, `dev` unless set with `-ldflags "-X main.version=<version>"` |
+| `uptime_seconds` | integer | seconds since the process started |
+
+The endpoint returns `200` for `ok` and `degraded`, and `503` for `down`. An idle worker that finds nothing to deliver still reports `ok`, because worker health comes from its last poll rather than its last delivery. For per-destination health, use `GET /v1/endpoints/{id}/health`.
 
 ## Benchmarks
 
