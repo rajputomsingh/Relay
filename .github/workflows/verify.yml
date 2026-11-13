@@ -1,0 +1,7 @@
+﻿name: Verify
+on: [push, workflow_dispatch]
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "GHA works after support unlock"
