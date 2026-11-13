@@ -80,6 +80,35 @@ func TestLoadDefaultsWorkerConcurrency(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsWorkerPollSeconds(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_WORKER_POLL_SECONDS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.WorkerPollSeconds != 2 {
+		t.Errorf(
+			"WorkerPollSeconds = %d, want default 2",
+			cfg.WorkerPollSeconds,
+		)
+	}
+}
+
+func TestLoadAcceptsExplicitWorkerPollSeconds(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_WORKER_POLL_SECONDS", "5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.WorkerPollSeconds != 5 {
+		t.Errorf("WorkerPollSeconds = %d, want 5", cfg.WorkerPollSeconds)
+	}
+}
+
 func TestLoadWorkerConcurrencyBoundaries(t *testing.T) {
 	tests := []struct {
 		name  string
