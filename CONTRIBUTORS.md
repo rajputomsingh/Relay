@@ -1,6 +1,13 @@
 # Contributors
 
-Relay exists because of the people below. This file is updated when your first pull request is merged - no action needed on your part.
+<p align="center">
+  <a href="https://github.com/rajputomsingh/Relay/graphs/contributors">
+    <img
+      src="https://contrib.rocks/image?repo=rajputomsingh/Relay"
+      alt="Relay contributors"
+    />
+  </a>
+</p>
 
 ## Core maintainer
 
@@ -10,9 +17,10 @@ Relay exists because of the people below. This file is updated when your first p
 
 Names appear here in chronological order of first merged contribution.
 
-<!-- Contributors will be added here as PRs are merged. -->
-
-*Your name could be here. See [the good first issues](https://github.com/rajputomsingh/relay/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) to get started.*
+- **[@sospeter-57](https://github.com/sospeter-57)** - per-endpoint delivery health endpoint (#95)
+- **[@IG-ABHINAV](https://github.com/IG-ABHINAV)** - worker config fix (#103), `.env` parsing (#104), typed SDK errors (#105)
+- **[@sinbumu](https://github.com/sinbumu)** - Go SDK endpoint health (#107)
+- **[@sharanyashetty013-droid](https://github.com/sharanyashetty013-droid)** - service health endpoint (#99, in progress)
 
 ## How to be added
 

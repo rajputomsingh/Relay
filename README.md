@@ -11,21 +11,25 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rajputomsingh/relay/actions">CI</a> ·
-  <a href="https://goreportcard.com/report/github.com/rajputomsingh/relay">Go Report Card</a> ·
-  <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE">Apache 2.0</a> ·
-  <a href="https://github.com/rajputomsingh/relay/issues">Issues</a>
+  <a href="https://github.com/rajputomsingh/relay/actions"><img src="https://img.shields.io/badge/CI-GitHub_Actions-blue?logo=githubactions&logoColor=white" alt="CI" /></a>
+  <a href="https://goreportcard.com/report/github.com/rajputomsingh/relay"><img src="https://goreportcard.com/badge/github.com/rajputomsingh/relay" alt="Go Report Card" /></a>
+  <a href="https://github.com/rajputomsingh/relay/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="Apache 2.0 License" /></a>
+  <a href="https://github.com/rajputomsingh/relay/issues"><img src="https://img.shields.io/github/issues/rajputomsingh/relay" alt="Issues" /></a>
+  <a href="https://github.com/rajputomsingh/relay"><img src="https://img.shields.io/github/stars/rajputomsingh/relay" alt="GitHub Stars" /></a>
+  <a href="https://github.com/rajputomsingh/relay/discussions"><img src="https://img.shields.io/github/discussions/rajputomsingh/relay" alt="Discussions" /></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/rajputomsingh/relay">GitHub</a> ·
-  <a href="https://github.com/rajputomsingh/relay/discussions">Discussions</a> ·
-  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-go">Go SDK</a> ·
-  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-node">Node.js SDK</a> ·
-  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-python">Python SDK</a>
+  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-go">
+    <img src="https://img.shields.io/badge/Go_SDK-Available-00ADD8?logo=go&logoColor=white" alt="Go SDK" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-node">
+    <img src="https://img.shields.io/badge/Node.js_SDK-Available-339933?logo=nodedotjs&logoColor=white" alt="Node.js SDK" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/tree/main/sdk-python">
+    <img src="https://img.shields.io/badge/Python_SDK-Available-3776AB?logo=python&logoColor=white" alt="Python SDK" />
+  </a>
 </p>
-
----
 
 Relay is a self-hosted webhook delivery service written in Go, with MongoDB as its persistence layer. It accepts events over HTTP and delivers them asynchronously to registered endpoints.
 
@@ -286,6 +290,28 @@ Relay is open source, and contributions are welcome. If you're interested in Go,
 For substantial changes, please open an issue first so the proposed approach can be discussed before implementation. Bug fixes, tests, documentation improvements, and focused pull requests are welcome.
 
 [Issues](https://github.com/rajputomsingh/relay/issues) · [Good First Issues](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) · [Contributing Guidelines](CONTRIBUTING.md)
+
+## Contributors
+
+Relay is built with contributions from the community. The contributor wall below is generated dynamically from the repository's Git history.
+
+<p align="center">
+  <a href="https://github.com/rajputomsingh/relay/graphs/contributors">
+    <img
+      src="https://contrib.rocks/image?repo=rajputomsingh/relay"
+      alt="Relay contributors"
+    />
+  </a>
+</p>
+
+<p align="center">
+  <sub>
+    View the
+    <a href="https://github.com/rajputomsingh/relay/graphs/contributors">GitHub contributors graph</a>
+    or the
+    <a href="CONTRIBUTORS.md">project contributor list</a>.
+  </sub>
+</p>
 
 ## License
 
