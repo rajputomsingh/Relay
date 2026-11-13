@@ -314,7 +314,9 @@ Before submitting a pull request:
 - Link the issue the pull request addresses, where applicable.
 - Include relevant test results and reproduction steps for bug fixes.
 - Update documentation when behavior or configuration changes.
-- Do not commit generated files, local configuration, or secrets.
+- **Do not commit** local-only generated files (`sdk-node/dist/`, `coverage.out`, `.env`) or secrets.
+- **Do commit** generated files that are served by production code or used as external contracts:
+  - `docs/docs.go`, `docs/swagger.json`, `docs/swagger.yaml` - OpenAPI spec, imported by `cmd/relay/main.go`, and the contract every SDK depends on.
 - Call out breaking changes and operational implications.
 - Respond to review feedback with focused follow-up commits.
 
