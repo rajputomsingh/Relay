@@ -1,0 +1,9 @@
+# Default reviewer for everything
+* @rajputomsingh
+
+# Node.js SDK — @IG-ABHINAV shipped typed errors (#105)
+sdk-node/ @IG-ABHINAV @rajputomsingh
+
+# Config and CLI — @IG-ABHINAV shipped worker config (#103) and .env support (#104)
+internal/config/ @IG-ABHINAV @rajputomsingh
+cmd/relay/ @IG-ABHINAV @rajputomsingh
