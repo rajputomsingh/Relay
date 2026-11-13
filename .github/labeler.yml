@@ -1,0 +1,47 @@
+sdk:
+  - changed-files:
+    - any-glob-to-any-file: 'sdk-node/**'
+    - any-glob-to-any-file: 'sdk-go/**'
+    - any-glob-to-any-file: 'sdk-python/**'
+
+api:
+  - changed-files:
+    - any-glob-to-any-file: 'internal/handlers/**'
+
+worker:
+  - changed-files:
+    - any-glob-to-any-file: 'internal/delivery/**'
+
+reconciler:
+  - changed-files:
+    - any-glob-to-any-file: 'internal/reconciler/**'
+
+config:
+  - changed-files:
+    - any-glob-to-any-file: 'internal/config/**'
+    - any-glob-to-any-file: 'cmd/relay/**'
+
+ci-cd:
+  - changed-files:
+    - any-glob-to-any-file: '.github/workflows/**'
+    - any-glob-to-any-file: '.github/**'
+    - any-glob-to-any-file: 'Dockerfile'
+    - any-glob-to-any-file: 'docker-compose.yml'
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file: '**/*.md'
+    - any-glob-to-any-file: 'docs/**'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file: '**/*_test.go'
+    - any-glob-to-any-file: 'sdk-node/**/*.test.ts'
+    - any-glob-to-any-file: 'sdk-python/**/test_*.py'
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file: 'go.mod'
+    - any-glob-to-any-file: 'go.sum'
+    - any-glob-to-any-file: 'sdk-node/package.json'
+    - any-glob-to-any-file: 'sdk-node/pnpm-lock.yaml'
