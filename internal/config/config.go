@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -30,9 +31,13 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	// .env is a local-development fallback: godotenv.Load never overrides
+	// variables that are already set in the process environment, so an
+	// explicit export always wins over the file. A missing file is fine;
+	// an existing file with invalid syntax is a hard, named error.
 	if err := godotenv.Load(); err != nil &&
 		!errors.Is(err, os.ErrNotExist) {
-		return Config{}, errors.New("failed to load configuration")
+		return Config{}, fmt.Errorf("failed to load .env file: %w", err)
 	}
 
 	cfg := Config{

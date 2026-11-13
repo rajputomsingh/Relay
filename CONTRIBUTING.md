@@ -67,6 +67,8 @@ Edit `.env` and configure the values required by your local setup, including:
 - `MONGODB_URI`
 - `RELAY_API_KEY` (minimum 32 characters)
 
+The server loads `.env` from the current working directory on startup. Values already exported in your shell always take precedence over `.env`, so you can override any single value without editing the file. If an existing `.env` has invalid syntax, startup fails with an error naming the file.
+
 If you're using Windows PowerShell and `cp` is unavailable, use:
 
 ```powershell
