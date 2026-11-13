@@ -1,6 +1,5 @@
 version: 2
 updates:
-  # Go modules
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
@@ -13,11 +12,9 @@ updates:
     labels:
       - "dependencies"
     ignore:
-      # Pin major versions of high-impact dependencies
       - dependency-name: "go.mongodb.org/mongo-driver/*"
         update-types: ["version-update:semver-major"]
 
-  # Node SDK
   - package-ecosystem: "npm"
     directory: "/sdk-node"
     schedule:
@@ -30,8 +27,17 @@ updates:
     labels:
       - "dependencies"
       - "sdk"
+    ignore:
+      # Major version bumps of TypeScript need dedicated PRs with full testing
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # @types/node must match the Node runtime version in CI
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # Other major bumps: manual review
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
-  # Python SDK
   - package-ecosystem: "pip"
     directory: "/sdk-python"
     schedule:
@@ -44,12 +50,7 @@ updates:
     labels:
       - "dependencies"
       - "sdk"
-    ignore:
-      # If sdk-python doesn't exist yet, this silently no-ops
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
 
-  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -61,6 +62,5 @@ updates:
     labels:
       - "ci-cd"
     ignore:
-      # Avoid churn on major version bumps — review manually
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
