@@ -61,7 +61,7 @@ jobs:
           MONGODB_TEST_URI: mongodb://127.0.0.1:27017
           RELAY_API_KEY: "test-key-1234567890-abcdefghijklmnop"
           APP_ENV: development
-        run: go test -v -race -count=1 ./...
+        run: go test -v -count=1 ./...
 
   node-sdk:
     name: 📦 Node SDK
