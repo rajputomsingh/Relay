@@ -1,15 +1,24 @@
-name: CI
+name: 🐉 Relay CI
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  go-lint-test:
-    name: Go (lint, vet, test)
+  go:
+    name: 🦫 Go (lint, vet, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       mongodb:
@@ -20,16 +29,21 @@ jobs:
           --health-cmd "mongosh --eval 'db.runCommand({ping:1}).ok'"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
       - name: Download Go modules
         run: go mod download
+
       - name: gofmt check
         run: |
           unformatted=$(gofmt -l ./cmd ./internal ./bench ./sdk-go)
@@ -38,58 +52,85 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
       - name: go vet
         run: go vet ./...
-      - name: go test
+
+      - name: go test (with race detector)
         env:
           MONGODB_TEST_URI: mongodb://127.0.0.1:27017
           RELAY_API_KEY: "test-key-1234567890-abcdefghijklmnop"
           APP_ENV: development
-        run: go test -v ./...
+        run: go test -v -count=1 ./...
 
   node-sdk:
-    name: Node SDK
+    name: 📦 Node SDK
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: sdk-node
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 9
-      - uses: actions/setup-node@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
           cache-dependency-path: sdk-node/pnpm-lock.yaml
+
       - name: pnpm install
         run: pnpm install --frozen-lockfile
+
       - name: pnpm typecheck
         run: pnpm typecheck
+
       - name: pnpm build
         run: pnpm build
+
       - name: pnpm test
         run: pnpm test
 
   build:
-    name: Build
+    name: 🏗️ Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - run: go build -v ./...
+
+      - name: go build
+        run: go build -v ./...
 
   docker-build:
-    name: Docker build
+    name: 🐳 Docker build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Build Docker image
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
         run: |
           docker build -t relay:test .
           echo "Docker build successful. Image size:"
