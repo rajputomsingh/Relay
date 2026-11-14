@@ -20,14 +20,12 @@ jobs:
           script: |
             const fs = require('fs');
             
-            // Fetch up to 100 contributors
             const response = await github.rest.repos.listContributors({
               owner: context.repo.owner,
               repo: context.repo.repo,
               per_page: 100
             });
             
-            // Filter out bots and generate the HTML string exactly like recodehive
             const contributors = response.data.filter(c => c.type !== 'Bot');
             let html = '';
             
@@ -35,23 +33,36 @@ jobs:
               html += `<a href="${c.html_url}"><img src="${c.avatar_url}&s=48" width="48" height="48" alt="${c.login}"></a> `;
             });
             
-            // Read README
             let readme = fs.readFileSync('README.md', 'utf8');
             
-            // Replace everything between the markers
             const startMarker = '<!-- contributors:start -->';
             const endMarker = '<!-- contributors:end -->';
-            
             const regex = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`, 'g');
-            readme = readme.replace(regex, `${startMarker}\n${html}\n${endMarker}`);
             
-            // Write back to README
-            fs.writeFileSync('README.md', readme);
+            const newReadme = readme.replace(regex, `${startMarker}\n${html}\n${endMarker}`);
+            
+            if (readme === newReadme) {
+              console.log("No changes needed to README.");
+              return;
+            }
 
-      - name: Commit and Push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git diff --quiet && git diff --staged --quiet || git commit -m "docs: auto-update contributors wall [skip ci]"
-          git push
+            const fileData = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'README.md',
+            });
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'README.md',
+              message: 'docs: auto-update contributors wall [skip ci]',
+              content: Buffer.from(newReadme).toString('base64'),
+              sha: fileData.data.sha,
+              branch: 'main',
+              committer: {
+                name: 'github-actions[bot]',
+                email: 'github-actions[bot]@users.noreply.github.com'
+              }
+            });
+            console.log("Successfully updated README via API.");
