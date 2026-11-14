@@ -51,3 +51,40 @@ Currently, Relay uses `RELAY_API_KEY`. We will introduce API Keys tied directly 
 ### 2. The Tenant Context
 We will never trust a `tenant_id` provided in the JSON body. It must only come from the API key. 
 In Go, we will create a helper: `tenantID := tenant.FromContext(ctx)`.
+
+## Data Model and Indexing
+
+We are adding `tenant_id` as a BSON string to:
+
+- `events`
+- `endpoints`
+- `deliveries`
+- `attempts`
+
+### Index Updates
+
+Every tenant-scoped index must include `tenant_id` as its leading key.
+
+**Before:**
+
+```go
+index := mongo.IndexModel{
+    Keys: bson.D{{Key: "event_type", Value: 1}},
+}
+```
+
+**After:**
+
+```go
+index := mongo.IndexModel{
+    Keys: bson.D{
+        {Key: "tenant_id", Value: 1},
+        {Key: "event_type", Value: 1},
+    },
+}
+```
+
+Tenant-prefixed compound indexes allow MongoDB to efficiently execute tenant-scoped queries.
+
+Existing indexes must be audited before migration. Unique indexes must also be reviewed to determine whether uniqueness should be global or tenant-scoped.
+
