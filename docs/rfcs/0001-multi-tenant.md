@@ -132,3 +132,45 @@ Automated tests and code review will verify cross-tenant isolation.
 
 The repository pattern reduces accidental omissions but is not a compile-time guarantee. Enforcement must also be supported by tests, code review, and restricted database access.
 
+
+## Worker and Delivery Flow
+
+The delivery workers currently poll the `deliveries` collection.
+
+With multi-tenancy, workers will process deliveries belonging to multiple tenants while preserving tenant isolation.
+
+### Delivery Processing
+
+1. The worker claims a delivery.
+2. The delivery document contains its `tenant_id`.
+3. The worker fetches endpoint configuration using both the endpoint ID and delivery tenant ID.
+4. The webhook signing secret is resolved within the same tenant boundary.
+5. The worker executes the delivery and records attempts under the same tenant.
+
+### Tenant Ownership Validation
+
+Endpoint lookups must include tenant ownership:
+
+```go
+filter := bson.D{
+    {Key: "_id", Value: delivery.EndpointID},
+    {Key: "tenant_id", Value: delivery.TenantID},
+}
+```
+
+The worker must never trust an endpoint ID alone.
+
+### Cross-Tenant Retries
+
+Lease recovery must remain independent of tenant identity.
+
+If a worker crashes:
+
+1. The lease expires.
+2. The reconciler identifies the expired lease.
+3. The delivery is reclaimed.
+4. The original `tenant_id` is preserved.
+5. The delivery is re-queued for processing.
+
+Tenant ownership must remain unchanged throughout retries, lease recovery, and dead-letter handling.
+
