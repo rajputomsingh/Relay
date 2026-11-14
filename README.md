@@ -323,7 +323,7 @@ Relay is built with contributions from the community. The contributor wall below
 <p align="center">
   <a href="https://github.com/rajputomsingh/relay/graphs/contributors">
     <img
-      src="https://contrib.rocks/image?repo=rajputomsingh/relay"
+      src="https://raw.githubusercontent.com/rajputomsingh/relay/main/contributors.svg"
       alt="Relay contributors"
     />
   </a>
