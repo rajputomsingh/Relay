@@ -174,3 +174,51 @@ If a worker crashes:
 
 Tenant ownership must remain unchanged throughout retries, lease recovery, and dead-letter handling.
 
+
+## Migration Strategy
+
+Existing Relay deployments must continue functioning throughout the migration.
+
+We will use a phased rollout.
+
+### Phase 1: Tenant Zero Migration
+
+- Introduce an optional `tenant_id` field during the compatibility phase.
+- Create a migration command at `cmd/migrate-tenant`.
+- Identify existing documents without a `tenant_id`.
+- Assign legacy records to `tenant-0`.
+- Explicitly map existing API credentials to the legacy tenant.
+
+Missing or invalid credentials must never silently authenticate as `tenant-0`.
+
+### Phase 2: Index Migration
+
+- Audit existing indexes.
+- Create tenant-prefixed compound indexes.
+- Validate index definitions and query plans.
+- Drop obsolete indexes only after replacements are verified.
+- Support rollback if index creation or migration fails.
+
+### Phase 3: Enforce Multi-Tenancy
+
+- Require every API key to map to a valid tenant.
+- Require tenant context for all tenant-owned operations.
+- Remove compatibility fallbacks.
+- Reject requests without a valid tenant identity.
+- Verify isolation across API handlers, repositories, and workers.
+
+## Open Questions
+
+- Should tenant deletion be supported through an API?
+- What are the limits per tenant (maximum endpoints, events per second, and concurrent deliveries)?
+- Should tenant-level usage metrics and billing be introduced?
+- What retention and data-export policies should apply to each tenant?
+
+## Conclusion
+
+Option A (Shared Collections) provides a practical foundation for Relay's multi-tenant SaaS architecture.
+
+It avoids the operational overhead of maintaining separate collections or databases for every tenant while preserving isolation through API-key-based tenant resolution, tenant-aware repositories, scoped database queries, and worker-level ownership validation.
+
+Tenant isolation must be treated as a security invariant rather than an optional application convention.
+
