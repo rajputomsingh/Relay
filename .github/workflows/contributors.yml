@@ -1,4 +1,4 @@
-name: Generate Contributors Wall
+﻿name: Generate Contributors Wall
 
 on:
   push:
@@ -27,9 +27,9 @@ jobs:
           plugin_contributors: yes
           plugin_contributors_sections: contributors
           plugin_contributors_ignored: github-actions[bot]
-          # Design settings
+          # Corrected Design settings
           config_display: columns
-          config_theme: dark
+          config_presets: "dark"
           config_timezone: UTC
           config_padding: 0, 8 + 10%
 
