@@ -321,7 +321,13 @@ For substantial changes, please open an issue first so the proposed approach can
 Relay is built with contributions from the community.
 
 <!-- contributors:start -->
-<a href="https://github.com/rajputomsingh"><img src="https://avatars.githubusercontent.com/u/175422536?v=4&s=48" width="48" height="48" style="border-radius: 50%;" alt="rajputomsingh"></a> <a href="https://github.com/sospeter-57"><img src="https://avatars.githubusercontent.com/u/150504913?v=4&s=48" width="48" height="48" style="border-radius: 50%;" alt="sospeter-57"></a> <a href="https://github.com/IG-ABHINAV"><img src="https://avatars.githubusercontent.com/u/127868165?v=4&s=48" width="48" height="48" style="border-radius: 50%;" alt="IG-ABHINAV"></a> <a href="https://github.com/sinbumu"><img src="https://avatars.githubusercontent.com/u/21115111?v=4&s=48" width="48" height="48" style="border-radius: 50%;" alt="sinbumu"></a> <a href="https://github.com/sharanyashetty013-droid"><img src="https://avatars.githubusercontent.com/u/220977966?v=4&s=48" width="48" height="48" style="border-radius: 50%;" alt="sharanyashetty013-droid"></a> 
+<p align="center">
+  <a href="https://github.com/rajputomsingh" title="rajputomsingh"><img src="https://avatars.githubusercontent.com/u/175422536?v=4&s=64" width="64" height="64" style="border-radius: 50%; margin: 4px;" alt="rajputomsingh" /></a>
+  <a href="https://github.com/sospeter-57" title="sospeter-57"><img src="https://avatars.githubusercontent.com/u/150504913?v=4&s=64" width="64" height="64" style="border-radius: 50%; margin: 4px;" alt="sospeter-57" /></a>
+  <a href="https://github.com/IG-ABHINAV" title="IG-ABHINAV"><img src="https://avatars.githubusercontent.com/u/127868165?v=4&s=64" width="64" height="64" style="border-radius: 50%; margin: 4px;" alt="IG-ABHINAV" /></a>
+  <a href="https://github.com/sinbumu" title="sinbumu"><img src="https://avatars.githubusercontent.com/u/21115111?v=4&s=64" width="64" height="64" style="border-radius: 50%; margin: 4px;" alt="sinbumu" /></a>
+  <a href="https://github.com/sharanyashetty013-droid" title="sharanyashetty013-droid"><img src="https://avatars.githubusercontent.com/u/220977966?v=4&s=64" width="64" height="64" style="border-radius: 50%; margin: 4px;" alt="sharanyashetty013-droid" /></a>
+</p>
 <!-- contributors:end -->
 
 <p align="center">
