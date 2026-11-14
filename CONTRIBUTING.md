@@ -144,6 +144,29 @@ You can contribute in several ways:
 
 If none of the current issues fit what you want to work on, open a [Discussion](https://github.com/rajputomsingh/relay/discussions) describing your idea before beginning a large change.
 
+
+## Access and roles
+
+Relay uses **fork-based contribution**. You do not need write access to contribute, and you will not be granted write access before you have shipped something.
+
+The ladder describes how recognition grows. It is not a contract.
+
+### Rung 1 → Contributor
+Anyone who opens a PR from a fork. No invitation, no setup. **This is where nearly everyone stays, and that is fine.**
+
+### Rung 2 → Recognized contributor
+After your **first merged PR**, you are automatically credited in release notes, added to `CONTRIBUTORS.md`, and listed in #81.
+
+### Rung 3 → Trusted reviewer
+After **three merged PRs in the same area**, you may be added to `.github/CODEOWNERS` for those paths → auto-requested for review, review counts toward merge, no write access.
+
+### Rung 4 → Maintainer
+By invitation only, after sustained contribution. Triage or collaborator access, merge rights, CODEOWNERS ownership.
+
+### What we do not do
+- ❌ Send collaborator invitations as a recruitment tool
+- ❌ Add people to CODEOWNERS before their first merged PR
+- ❌ Grant write access to `main` to anyone — all changes → PRs
 ## Development Setup
 
 ### Prerequisites
@@ -320,6 +343,16 @@ Before submitting a pull request:
 - Call out breaking changes and operational implications.
 - Respond to review feedback with focused follow-up commits.
 
+
+### Code review
+
+Reviews are conversational, not adversarial.
+
+- **Expect specific comments, not vague ones.**
+- **Push follow-up commits rather than force-pushing** unless asked to rebase.
+- **Do not resolve review comments yourself.** Let the reviewer resolve their own threads.
+- **If a review takes longer than the response targets →** one polite ping. A second within a week → no.
+- **Small, focused PRs → reviewed fastest.**
 ## What to expect
 
 The following are **maintainer response targets**, not guaranteed service-level commitments. Review time can vary with availability and the size or complexity of a change.
