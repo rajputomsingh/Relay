@@ -318,16 +318,10 @@ For substantial changes, please open an issue first so the proposed approach can
 
 ## Contributors
 
-Relay is built with contributions from the community. The contributor wall below is generated dynamically from the repository's Git history.
+Relay is built with contributions from the community.
 
-<p align="center">
-  <a href="https://github.com/rajputomsingh/relay/graphs/contributors">
-    <img
-      src="https://raw.githubusercontent.com/rajputomsingh/relay/main/contributors.svg"
-      alt="Relay contributors"
-    />
-  </a>
-</p>
+<!-- contributors:start -->
+<!-- contributors:end -->
 
 <p align="center">
   <sub>
