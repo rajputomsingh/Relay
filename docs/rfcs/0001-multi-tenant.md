@@ -88,3 +88,47 @@ Tenant-prefixed compound indexes allow MongoDB to efficiently execute tenant-sco
 
 Existing indexes must be audited before migration. Unique indexes must also be reviewed to determine whether uniqueness should be global or tenant-scoped.
 
+
+## Query Impact and Enforcement
+
+The biggest risk of shared collections is accidentally executing an unscoped query.
+
+For example:
+
+```go
+db.Collection("events").Find(ctx, bson.D{})
+```
+
+To prevent this, database access will be centralized behind tenant-aware repository interfaces.
+
+The database driver will not be exposed directly to HTTP handlers.
+
+### Repository Interface
+
+```go
+type EventRepository interface {
+    FindByID(
+        ctx context.Context,
+        tenantID string,
+        id string,
+    ) (*Event, error)
+}
+```
+
+### Tenant-Scoped Query
+
+```go
+filter := bson.D{
+    {Key: "_id", Value: id},
+    {Key: "tenant_id", Value: tenantID},
+}
+```
+
+All tenant-owned reads, updates, deletes, and aggregation pipelines must enforce the same isolation rule.
+
+Repository implementations must reject operations without a valid tenant identity.
+
+Automated tests and code review will verify cross-tenant isolation.
+
+The repository pattern reduces accidental omissions but is not a compile-time guarantee. Enforcement must also be supported by tests, code review, and restricted database access.
+
