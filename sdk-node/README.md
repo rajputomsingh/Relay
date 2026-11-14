@@ -19,7 +19,7 @@ const relay = new Relay({
   apiKey: process.env.RELAY_API_KEY!,
 });
 
-await relay.sendEvent(
+const submitted = await relay.sendEvent(
   {
     source: "my-app",
     event_type: "user.created",
@@ -27,6 +27,88 @@ await relay.sendEvent(
   },
   "user-created-001",
 );
+if (!submitted.event_id) {
+  throw new Error("Look up the event ID with listEvents() after an idempotent retry.");
+}
+const eventId = submitted.event_id;
+```
+
+## Endpoints and deliveries
+
+These examples reuse `relay` and `eventId` from Quick Start. See the [API reference](../README.md#api-reference) and [OpenAPI specification](../docs/swagger.yaml) for more detail.
+
+### List endpoints
+
+```typescript
+const { endpoints, count } = await relay.listEndpoints();
+console.log(`${count} endpoints`);
+for (const endpoint of endpoints) {
+  console.log(endpoint.id, endpoint.name, endpoint.enabled);
+}
+```
+
+### Create an endpoint
+
+```typescript
+const endpoint = await relay.createEndpoint({
+  name: "orders",
+  url: "https://example.com/webhooks/orders",
+  event_filter: { sources: ["orders"], event_types: ["order.created"] },
+  max_attempts: 5,
+});
+console.log(endpoint.id, endpoint.has_signing_secret);
+```
+
+### Update an endpoint
+
+```typescript
+const updated = await relay.updateEndpoint(endpoint.id, {
+  enabled: true,
+  rate_limit_rps: 10,
+});
+console.log(updated.updated_at);
+```
+
+### Read endpoint health
+
+```typescript
+const health = await relay.getEndpointHealth(endpoint.id);
+console.log({
+  success_rate_1h: health.success_rate_1h,
+  attempts_1h: health.attempts_1h,
+  last_success_at: health.last_success_at,
+  last_failure_at: health.last_failure_at,
+});
+```
+
+With no delivery history, the response has zero counts and explicit null timestamps and latency percentiles:
+
+```json
+{
+  "success_rate_1h": 0, "attempts_1h": 0, "successes_1h": 0,
+  "failures_1h": 0, "consecutive_failures": 0,
+  "last_success_at": null, "last_failure_at": null,
+  "p50_latency_ms": null, "p95_latency_ms": null, "p99_latency_ms": null
+}
+```
+
+### Replay an event
+
+```typescript
+const replay = await relay.replayEvent(eventId);
+if (replay.status === "replay_queued") {
+  console.log(replay.event_id, replay.deliveries_requeued);
+}
+```
+
+### Inspect event deliveries
+
+```typescript
+const event = await relay.inspectEvent(eventId);
+const { deliveries } = await relay.listDeliveries(event.id);
+for (const delivery of deliveries) {
+  console.log(delivery.endpoint_id, delivery.status, delivery.attempts);
+}
 ```
 
 ## Error Handling
@@ -46,21 +128,21 @@ Common statuses are mapped to typed subclasses, all of which extend `RelayAPIErr
 
 ```typescript
 import {
-  Relay,
+  NotFoundError,
   RateLimitedError,
   RelayAPIError,
   ServerError,
+  UnauthorizedError,
 } from "@rajputomsingh/relay-node";
 
 try {
-  await relay.sendEvent({ source: "my-app", event_type: "order.placed", data: {} });
+  await relay.getEndpoint(endpoint.id);
 } catch (err) {
-  if (err instanceof RateLimitedError) {
-    // Back off and retry later; err.status === 429.
-  } else if (err instanceof ServerError) {
-    // Relay is unhealthy; err.status >= 500.
-  } else if (err instanceof RelayAPIError) {
-    // Any other API failure, e.g. 403 or 409.
+  if (err instanceof UnauthorizedError) console.error("Check the API key"); // 401
+  else if (err instanceof NotFoundError) console.error("Endpoint not found"); // 404
+  else if (err instanceof ServerError) console.error("Retry after a 5xx response"); // e.g. 503
+  else if (err instanceof RateLimitedError) console.error("Back off and retry");
+  else if (err instanceof RelayAPIError) {
     console.error(err.status, err.message, err.body);
   }
 }
