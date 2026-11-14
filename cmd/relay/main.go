@@ -80,7 +80,11 @@ func main() {
 		slog.Error("failed to initialize mongo client", "error", err)
 		os.Exit(1)
 	}
-	defer client.Disconnect(context.Background())
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			slog.Warn("failed to disconnect mongo client", "error", err)
+		}
+	}()
 
 	if err := client.Ping(connectCtx, readpref.Primary()); err != nil {
 		slog.Error("failed to ping mongo", "error", err)

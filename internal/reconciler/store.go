@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -57,7 +58,11 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 	if err != nil {
 		return nil, fmt.Errorf("aggregate orphaned events: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close orphaned events cursor", "error", err)
+		}
+	}()
 
 	var events []EventRecord
 	if err := cursor.All(ctx, &events); err != nil {
@@ -91,7 +96,11 @@ func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) (
 	if err != nil {
 		return nil, fmt.Errorf("aggregate incomplete fanout events: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close incomplete fanout events cursor", "error", err)
+		}
+	}()
 
 	var events []EventRecord
 	if err := cursor.All(ctx, &events); err != nil {
@@ -209,7 +218,11 @@ func (s *Store) FindStaleParentStates(
 	if err != nil {
 		return nil, fmt.Errorf("aggregate stale parent states: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close stale parent states cursor", "error", err)
+		}
+	}()
 
 	var ids []bson.ObjectID
 	for cursor.Next(ctx) {

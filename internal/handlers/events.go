@@ -117,7 +117,10 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxEventBody)
-	defer r.Body.Close()
+	defer func() {
+		// Closing the request body is best-effort; it must not replace the handler's result.
+		_ = r.Body.Close()
+	}()
 
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()

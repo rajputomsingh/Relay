@@ -36,10 +36,18 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect mongo: %v", err)
 	}
-	defer client.Disconnect(ctx)
+	defer func() {
+		if err := client.Disconnect(ctx); err != nil {
+			t.Errorf("disconnect mongo client: %v", err)
+		}
+	}()
 
 	db := client.Database("relay_sdk_integration_test")
-	defer db.Drop(ctx)
+	defer func() {
+		if err := db.Drop(ctx); err != nil {
+			t.Errorf("drop test database: %v", err)
+		}
+	}()
 
 	events := db.Collection("events")
 	endpointsCol := db.Collection("endpoints")

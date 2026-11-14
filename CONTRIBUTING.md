@@ -90,13 +90,14 @@ If setup fails, comment on your issue or open a Discussion. Setup problems are u
 Follow the issue description and keep the change focused. Before opening a pull request, run:
 
 ```bash
+make lint
 go test ./...
 go vet ./...
 go build ./...
 git diff --check
 ```
 
-All four checks should pass. If a command fails, include the relevant error output in your issue or pull request so someone can help diagnose it.
+All five checks should pass. See [Static analysis](#static-analysis) to install the pinned linter. If a command fails, include the relevant error output in your issue or pull request so someone can help diagnose it.
 
 ### Step 5 - Open the pull request (5 minutes)
 
@@ -295,6 +296,7 @@ curl http://localhost:8080/healthz
 Run the full validation gate before proposing changes:
 
 ```bash
+make lint
 go test ./...
 go vet ./...
 go build ./...
@@ -315,6 +317,32 @@ go test ./internal/delivery -count=1
 ```
 
 On Windows PowerShell, use `$env:MONGODB_TEST_URI = "mongodb://localhost:27017"` instead of `export`.
+
+### Static analysis
+
+Install the official **golangci-lint v2.15.0** binary for your OS and architecture from
+the [release page](https://github.com/golangci/golangci-lint/releases/tag/v2.15.0),
+verify it against the published checksums, and put `golangci-lint` on your `PATH`.
+Use a Go version matching `go.mod`; this linter release is built with Go 1.27.
+GNU Make is required for the convenience target (on Windows, use a shell with Make available).
+
+```bash
+golangci-lint version --short # Must print 2.15.0
+make lint
+```
+
+For a binary installed elsewhere, run `make lint GOLANGCI_LINT=/path/to/golangci-lint`.
+The target rejects missing or mismatched versions and uses the same configuration
+and `./...` package scope as CI, including tests, `bench/`, and `sdk-go/`.
+It does not need a running MongoDB. Without Make, the equivalent check is
+`golangci-lint run --config=.golangci.yml ./...` with the same pinned version.
+
+The initial checks are `errcheck`, `govet`, `ineffassign`, `unused`, and
+`staticcheck`'s correctness (`SA*`) and simplification (`S*`) checks. In v2,
+`gosimple` is included in `staticcheck`. Fix findings rather than excluding whole
+packages or test files; explain intentional best-effort cleanup in the code.
+When upgrading the linter, update both the Makefile version and CI's `version`
+input, then validate the entire module again.
 
 ## Commit Messages
 

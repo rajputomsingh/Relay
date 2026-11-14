@@ -344,7 +344,10 @@ func parseEndpointID(w http.ResponseWriter, r *http.Request) (bson.ObjectID, boo
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, target any) bool {
-	defer r.Body.Close()
+	defer func() {
+		// Closing the request body is best-effort; it must not replace the handler's result.
+		_ = r.Body.Close()
+	}()
 
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()

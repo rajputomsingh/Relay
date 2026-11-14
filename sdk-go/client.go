@@ -116,14 +116,18 @@ func (c *Client) do(req *http.Request, v interface{}) error {
 
 		// Check if we need to retry based on status code
 		if isRetryableStatus(resp.StatusCode) && attempt < c.retryConfig.MaxRetries {
-			resp.Body.Close() // Close body to reuse connection
+			// This response is discarded; the HTTP status determines the retry.
+			_ = resp.Body.Close()
 			lastErr = fmt.Errorf("retryable status: %d", resp.StatusCode)
 			time.Sleep(c.retryConfig.backoff(attempt))
 			continue
 		}
 
 		// If it's a non-retryable error, or success, process and return
-		defer resp.Body.Close()
+		defer func() {
+			// Cleanup must not replace the response status or decoding error.
+			_ = resp.Body.Close()
+		}()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return parseError(resp)

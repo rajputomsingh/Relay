@@ -56,6 +56,12 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0 # Keep in sync with GOLANGCI_LINT_VERSION in Makefile.
+          args: --config=.golangci.yml ./...
+
       - name: go test
         env:
           MONGODB_TEST_URI: mongodb://127.0.0.1:27017

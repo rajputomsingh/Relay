@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -67,7 +68,11 @@ func (s *Store) List(ctx context.Context) ([]Endpoint, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find endpoints: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close endpoints cursor", "error", err)
+		}
+	}()
 
 	result := make([]Endpoint, 0)
 	if err := cursor.All(ctx, &result); err != nil {

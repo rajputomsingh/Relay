@@ -208,7 +208,11 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find attempts: %v", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			t.Errorf("close attempts cursor: %v", err)
+		}
+	}()
 
 	cycles := make(map[int]bool)
 	for cursor.Next(ctx) {
