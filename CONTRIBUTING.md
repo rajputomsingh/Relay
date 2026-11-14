@@ -17,9 +17,9 @@ You do not need to be an expert in every part of Relay. Start with an issue that
 
 ## First-time contributor quickstart
 
-If this is your first pull request anywhere, follow these five steps. Estimated time to prepare and submit a first contribution: **30–90 minutes**, depending on the issue and your environment.
+If this is your first pull request anywhere, follow these five steps. Estimated time to prepare and submit a first contribution: **30-90 minutes**, depending on the issue and your environment.
 
-### Step 1 — Pick an issue (2 minutes)
+### Step 1 → Pick an issue (2 minutes)
 
 Open the [good first issue label](https://github.com/rajputomsingh/relay/labels/good%20first%20issue). Look for issues that explain:
 
@@ -34,7 +34,7 @@ If you're not sure which issue fits, leave a comment:
 
 Please wait for maintainer confirmation before starting work on an issue that may already be assigned.
 
-### Step 2 — Fork and clone (5 minutes)
+### Step 2 → Fork and clone (5 minutes)
 
 1. Click **Fork** on [the Relay repository](https://github.com/rajputomsingh/relay).
 2. Clone your fork and configure the upstream remote:
@@ -48,7 +48,7 @@ git switch -c docs/your-change-here
 
 Use a branch name that describes the work. See [Branch naming](#branch-naming).
 
-### Step 3 — Set up the environment (10–20 minutes)
+### Step 3 → Set up the environment (10-20 minutes)
 
 Download Go dependencies:
 
@@ -85,7 +85,7 @@ docker compose up -d mongodb
 
 If setup fails, comment on your issue or open a Discussion. Setup problems are useful feedback because they can reveal documentation gaps.
 
-### Step 4 — Make and validate the change (30–60 minutes)
+### Step 4 → Make and validate the change (30-60 minutes)
 
 Follow the issue description and keep the change focused. Before opening a pull request, run:
 
@@ -98,7 +98,7 @@ git diff --check
 
 All four checks should pass. If a command fails, include the relevant error output in your issue or pull request so someone can help diagnose it.
 
-### Step 5 — Open the pull request (5 minutes)
+### Step 5 - Open the pull request (5 minutes)
 
 Review the files you intend to commit, then stage and commit your changes:
 
@@ -137,36 +137,55 @@ You can contribute in several ways:
 
 | Label                                                                                    | Meaning                           | Time estimate      |
 | ---------------------------------------------------------------------------------------- | --------------------------------- | ------------------ |
-| [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) | No prior context needed           | 1–4 hours          |
-| [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted)             | Needs architectural understanding | 4–8 hours          |
-| [`documentation`](https://github.com/rajputomsingh/relay/labels/documentation)           | Docs, examples, and guides        | 30 minutes–2 hours |
-| [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced)                     | For experienced contributors      | 1–3 days           |
+| [`good first issue`](https://github.com/rajputomsingh/relay/labels/good%20first%20issue) | No prior context needed           | 1-4 hours          |
+| [`help wanted`](https://github.com/rajputomsingh/relay/labels/help%20wanted)             | Needs architectural understanding | 4-8 hours          |
+| [`documentation`](https://github.com/rajputomsingh/relay/labels/documentation)           | Docs, examples, and guides        | 30 minutes-2 hours |
+| [`advanced`](https://github.com/rajputomsingh/relay/labels/advanced)                     | For experienced contributors      | 1-3 days           |
 
 If none of the current issues fit what you want to work on, open a [Discussion](https://github.com/rajputomsingh/relay/discussions) describing your idea before beginning a large change.
 
-
 ## Access and roles
 
-Relay uses **fork-based contribution**. You do not need write access to contribute, and you will not be granted write access before you have shipped something.
+Relay uses **fork-based contribution**. You do not need write access to the repository to contribute, and you will not be given write access before you have shipped something. This is intentional � it keeps the access list clean and keeps review authority with people who have demonstrated the judgment for it.
 
-The ladder describes how recognition grows. It is not a contract.
+The ladder below describes how recognition grows over time. It is not a contract, and it is not a ranking of people. It is a description of the access model so nobody has to guess.
 
-### Rung 1 → Contributor
-Anyone who opens a PR from a fork. No invitation, no setup. **This is where nearly everyone stays, and that is fine.**
+### Contributor
 
-### Rung 2 → Recognized contributor
-After your **first merged PR**, you are automatically credited in release notes, added to `CONTRIBUTORS.md`, and listed in #81.
+Anyone who opens a pull request from a fork. No special setup, no invitation needed. This is the default and preferred model. Almost everyone who contributes to Relay will stay on this rung indefinitely, and that is fine � it is the rung that ships the most code.
 
-### Rung 3 → Trusted reviewer
-After **three merged PRs in the same area**, you may be added to `.github/CODEOWNERS` for those paths → auto-requested for review, review counts toward merge, no write access.
+### Recognized contributor
 
-### Rung 4 → Maintainer
-By invitation only, after sustained contribution. Triage or collaborator access, merge rights, CODEOWNERS ownership.
+After your first merged pull request, you are:
+
+- Credited in the release notes for the release your change lands in.
+- Added to `CONTRIBUTORS.md`.
+- Listed in the "Recognized contributors" section of #81.
+
+Nothing is required from you to get here. It happens automatically at merge.
+
+### Trusted reviewer
+
+After three or more merged pull requests in the same area (delivery, handlers, SDK, docs, CI, etc.), you may be added to `.github/CODEOWNERS` for the paths you have worked on. This means:
+
+- You are automatically requested for review on pull requests touching those paths.
+- Your review counts toward the merge requirement.
+- You gain no repository write access.
+
+CODEOWNERS routing is the primary recognition mechanism for sustained contributors. It is visible (your handle appears on relevant PRs), functional (your review blocks or unblocks merges), and bounded (no security surface). If you reach this rung and want to be added, or if you want to be removed, comment on any of your merged PRs or open a Discussion.
+
+### Maintainer
+
+By invitation only, after sustained contribution and demonstrated judgment across multiple areas. Maintainers receive triage or collaborator access, can merge pull requests, and are listed in `.github/CODEOWNERS` for the areas they own. There is no application process. If you are interested, keep shipping � the invitation follows the work, not the ask.
 
 ### What we do not do
-- ❌ Send collaborator invitations as a recruitment tool
-- ❌ Add people to CODEOWNERS before their first merged PR
-- ❌ Grant write access to `main` to anyone — all changes → PRs
+
+- We do not send collaborator invitations as a recruitment tool. A collaborator invitation is reserved for people who have already contributed and are moving toward maintainership.
+- We do not add people to `.github/CODEOWNERS` before their first merged pull request.
+- We do not grant write access to `main` to anyone. All changes go through pull requests, including maintainer changes.
+
+If you have questions about the access model, open a Discussion. The answer will be added here.
+
 ## Development Setup
 
 ### Prerequisites
@@ -197,7 +216,7 @@ Edit `.env` and set `MONGODB_URI` and `RELAY_API_KEY` (minimum 32 characters) fo
 
 ### MongoDB for integration tests
 
-**Option A — Local MongoDB**
+**Option A - Local MongoDB**
 
 If MongoDB is already running locally:
 
@@ -206,7 +225,7 @@ export MONGODB_TEST_URI="mongodb://localhost:27017"
 go test ./internal/delivery -count=1
 ```
 
-**Option B — Docker (recommended if you do not have MongoDB installed)**
+**Option B - Docker (recommended if you do not have MongoDB installed)**
 
 ```bash
 docker compose up -d mongodb
@@ -343,16 +362,16 @@ Before submitting a pull request:
 - Call out breaking changes and operational implications.
 - Respond to review feedback with focused follow-up commits.
 
-
 ### Code review
 
-Reviews are conversational, not adversarial.
+Reviews are conversational, not adversarial. A few things that make the process faster for both sides:
 
-- **Expect specific comments, not vague ones.**
-- **Push follow-up commits rather than force-pushing** unless asked to rebase.
-- **Do not resolve review comments yourself.** Let the reviewer resolve their own threads.
-- **If a review takes longer than the response targets →** one polite ping. A second within a week → no.
-- **Small, focused PRs → reviewed fastest.**
+- **Expect specific comments, not vague ones.** If a maintainer asks for a change, they will point at the line and explain the reasoning. If something is unclear, ask.
+- **Push follow-up commits rather than force-pushing** unless the PR body or a maintainer explicitly asks for a rebase. This preserves the review history for anyone watching the PR.
+- **Do not resolve review comments yourself.** Let the reviewer resolve threads they opened, unless they have explicitly handed that off.
+- **If a review is taking longer than the response targets below,** a single polite ping on the PR thread is appropriate. A second ping within a week is not.
+- **Small, focused PRs get reviewed fastest.** If a PR touches more than one subsystem, expect a request to split it.
+
 ## What to expect
 
 The following are **maintainer response targets**, not guaranteed service-level commitments. Review time can vary with availability and the size or complexity of a change.

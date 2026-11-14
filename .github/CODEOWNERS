@@ -1,9 +1,47 @@
+# CODEOWNERS - review routing for rajputomsingh/Relay
+# See CONTRIBUTING.md → "Access and roles" for how this list grows.
+#
+# Default: every path requires review from the maintainer.
+# Contributors are added to specific paths after three merged PRs in that area.
+# Being listed here → review routing only. It does not grant write access.
+
 # Default reviewer for everything
-* @rajputomsingh
+*                                   @rajputomsingh
 
-# Node.js SDK — @IG-ABHINAV shipped typed errors (#105)
-sdk-node/ @IG-ABHINAV @rajputomsingh
+# Backend: delivery engine, workers, persistence, handlers
+/internal/delivery/                 @rajputomsingh
+/internal/handlers/                 @rajputomsingh
+/internal/database/                 @rajputomsingh
+/internal/security/                 @rajputomsingh
+/internal/reconciler/               @rajputomsingh
+/internal/lifecycle/                @rajputomsingh
+/internal/endpoints/                @rajputomsingh
 
-# Config and CLI — @IG-ABHINAV shipped worker config (#103) and .env support (#104)
-internal/config/ @IG-ABHINAV @rajputomsingh
-cmd/relay/ @IG-ABHINAV @rajputomsingh
+# Config and CLI - @IG-ABHINAV shipped worker config (#103) and .env support (#104)
+/internal/config/                   @IG-ABHINAV @rajputomsingh
+/cmd/relay/                         @IG-ABHINAV @rajputomsingh
+
+# Node.js SDK - @IG-ABHINAV shipped typed errors (#105)
+/sdk-node/                          @IG-ABHINAV @rajputomsingh
+
+# Go SDK
+/sdk-go/                            @rajputomsingh
+
+# API contract - generated but authoritative
+/docs/docs.go                       @rajputomsingh
+/docs/swagger.json                  @rajputomsingh
+/docs/swagger.yaml                  @rajputomsingh
+
+# Docs and project meta
+/docs/                              @rajputomsingh
+/README.md                          @rajputomsingh
+/CONTRIBUTING.md                    @rajputomsingh
+/CONTRIBUTORS.md                    @rajputomsingh
+/SECURITY.md                        @rajputomsingh
+
+# CI / infra / build
+/.github/                           @rajputomsingh
+/Makefile                           @rajputomsingh
+/docker-compose.yml                 @rajputomsingh
+/docker-compose.monitoring.yml      @rajputomsingh
+/Dockerfile                         @rajputomsingh
