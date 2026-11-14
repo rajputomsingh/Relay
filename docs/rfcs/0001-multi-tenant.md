@@ -38,3 +38,16 @@ All tenants share a database, but each gets a collection (e.g., `events_tenant_1
 ## Decision
 **We will use Option A (Shared Collections with `tenant_id`).** 
 Relay is built for scale. Option A is the industry standard (used by Stripe, GitHub, etc.) for good reason. The isolation safety will be enforced at the Go application layer via a strict repository pattern, not at the database layer.
+
+## Authentication and Tenant Resolution
+
+If we are adding a `tenant_id`, how does it get into the request?
+
+### 1. API Keys
+Currently, Relay uses `RELAY_API_KEY`. We will introduce API Keys tied directly to a tenant.
+- The `api_keys` collection will have: `key`, `tenant_id`, `created_at`.
+- When a request hits `/v1/events`, the middleware extracts the Bearer token, looks up the `tenant_id`, and injects it into the `context.Context`.
+
+### 2. The Tenant Context
+We will never trust a `tenant_id` provided in the JSON body. It must only come from the API key. 
+In Go, we will create a helper: `tenantID := tenant.FromContext(ctx)`.
