@@ -1,4 +1,4 @@
-﻿# RFC 0001: Multi-Tenant Isolation
+# RFC 0001: Multi-Tenant Isolation
 
 ## Executive Summary
 Relay currently assumes a single-tenant deployment per instance. All endpoints, events, and delivery records share a single MongoDB database without a tenant boundary. This RFC evaluates strategies for introducing multi-tenancy to support a hosted Relay Cloud and enterprise on-premise deployments.
@@ -15,7 +15,7 @@ As Relay scales from a self-hosted tool to a hosted infrastructure service, the 
 - Provide a path to migrate existing single-tenant deployments without downtime.
 ## Isolation Models
 
-We have four primary options for database isolation. 
+We have four primary options for database isolation.
 
 ### Option A: Shared Collections with `tenant_id` (Recommended)
 Every document gets a `tenant_id` field. The API middleware enforces that the `tenant_id` in the JWT/API key matches the query.
@@ -36,7 +36,7 @@ All tenants share a database, but each gets a collection (e.g., `events_tenant_1
 - **Cons:** MongoDB has limits on collections, and it makes migrations across tenants complex.
 
 ## Decision
-**We will use Option A (Shared Collections with `tenant_id`).** 
+**We will use Option A (Shared Collections with `tenant_id`).**
 Relay is built for scale. Option A is the industry standard (used by Stripe, GitHub, etc.) for good reason. The isolation safety will be enforced at the Go application layer via a strict repository pattern, not at the database layer.
 
 ## Authentication and Tenant Resolution
@@ -49,7 +49,7 @@ Currently, Relay uses `RELAY_API_KEY`. We will introduce API Keys tied directly 
 - When a request hits `/v1/events`, the middleware extracts the Bearer token, looks up the `tenant_id`, and injects it into the `context.Context`.
 
 ### 2. The Tenant Context
-We will never trust a `tenant_id` provided in the JSON body. It must only come from the API key. 
+We will never trust a `tenant_id` provided in the JSON body. It must only come from the API key.
 In Go, we will create a helper: `tenantID := tenant.FromContext(ctx)`.
 
 ## Data Model and Indexing
@@ -221,4 +221,3 @@ Option A (Shared Collections) provides a practical foundation for Relay's multi-
 It avoids the operational overhead of maintaining separate collections or databases for every tenant while preserving isolation through API-key-based tenant resolution, tenant-aware repositories, scoped database queries, and worker-level ownership validation.
 
 Tenant isolation must be treated as a security invariant rather than an optional application convention.
-
