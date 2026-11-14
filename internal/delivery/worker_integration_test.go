@@ -1014,10 +1014,28 @@ func TestWorkerIntegrationDisabledEndpointFailsDelivery(t *testing.T) {
 // Worker lifecycle
 // ---------------------------------------------------------------
 
+// lockedLogBuffer lets the test inspect logs while the worker is still writing.
+type lockedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 func TestWorkerIntegrationRunStopsOnCancellation(t *testing.T) {
 	db := newWorkerIntegrationDB(t)
 
-	var logs bytes.Buffer
+	var logs lockedLogBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 	worker := NewWorker(
