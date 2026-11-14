@@ -1,9 +1,6 @@
 # CODEOWNERS - review routing for rajputomsingh/Relay
 # See CONTRIBUTING.md → "Access and roles" for how this list grows.
-#
 # Default: every path requires review from the maintainer.
-# Contributors are added to specific paths after three merged PRs in that area.
-# Being listed here → review routing only. It does not grant write access.
 
 # Default reviewer for everything
 *                                   @rajputomsingh
