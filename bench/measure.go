@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime"
 	"sort"
@@ -149,14 +150,9 @@ func collectResult(
 			QueueGrowthP95:      percentileMS(pendingSamples, 0.95),
 			QueueSamples:        len(pendingSamples),
 		},
-		Final: final,
-		Server: serverStats{
-			Requests:      serverSnap.Requests,
-			Successes:     serverSnap.Successes,
-			Failures:      serverSnap.Failures,
-			TransientHits: serverSnap.TransientHits,
-		},
-		Mongo: mongoMetrics,
+		Final:  final,
+		Server: serverStats(serverSnap),
+		Mongo:  mongoMetrics,
 	}
 
 	return result, nil
@@ -274,7 +270,11 @@ func readAttemptDurations(
 	if err != nil {
 		return nil, fmt.Errorf("find attempts: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close attempt durations cursor", "error", err)
+		}
+	}()
 
 	out := make([]int64, 0)
 	for cursor.Next(ctx) {
@@ -310,7 +310,11 @@ func readAttemptDistribution(
 	if err != nil {
 		return nil, fmt.Errorf("aggregate attempts: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close attempt distribution cursor", "error", err)
+		}
+	}()
 
 	out := make(map[int]int64)
 	for cursor.Next(ctx) {
@@ -363,7 +367,11 @@ func readAttemptBreakdown(
 	if err != nil {
 		return nil, fmt.Errorf("find attempt breakdown: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close attempt breakdown cursor", "error", err)
+		}
+	}()
 
 	type rawAttempt struct {
 		AttemptNumber int    `bson:"attempt_number"`
@@ -454,7 +462,11 @@ func readRetryGaps(
 	if err != nil {
 		return nil, fmt.Errorf("aggregate retry gaps: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close retry gaps cursor", "error", err)
+		}
+	}()
 
 	out := make([]int64, 0)
 	for cursor.Next(ctx) {
@@ -499,7 +511,11 @@ func readQueueLatencies(
 	if err != nil {
 		return nil, nil, fmt.Errorf("find delivered: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close queue latencies cursor", "error", err)
+		}
+	}()
 
 	type deliveredRow struct {
 		ID          bson.ObjectID `bson:"_id"`

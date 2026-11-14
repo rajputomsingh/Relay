@@ -1,0 +1,24 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    staticcheck:
+      # v2 includes gosimple in staticcheck. Start with correctness and
+      # simplification checks; leave style and optional quick fixes out.
+      checks: ["SA*", "S*"]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -70,15 +70,7 @@ func (c *Client) CreateEndpoint(
 	ctx context.Context,
 	params CreateEndpointParams,
 ) (*Endpoint, error) {
-	body := createEndpointBody{
-		Name:          params.Name,
-		URL:           params.URL,
-		SigningSecret: params.SigningSecret,
-		EventFilter:   params.EventFilter,
-		MaxAttempts:   params.MaxAttempts,
-		RateLimitRPS:  params.RateLimitRPS,
-		Enabled:       params.Enabled,
-	}
+	body := createEndpointBody(params)
 
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/endpoints", body)
 	if err != nil {
@@ -212,15 +204,7 @@ func (c *Client) UpdateEndpoint(
 		return nil, fmt.Errorf("update endpoint: endpointID is required")
 	}
 
-	body := updateEndpointBody{
-		Name:          params.Name,
-		URL:           params.URL,
-		SigningSecret: params.SigningSecret,
-		EventFilter:   params.EventFilter,
-		MaxAttempts:   params.MaxAttempts,
-		RateLimitRPS:  params.RateLimitRPS,
-		Enabled:       params.Enabled,
-	}
+	body := updateEndpointBody(params)
 
 	req, err := c.newRequest(
 		ctx,

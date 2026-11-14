@@ -76,7 +76,11 @@ func (f *Fanout) CreateDeliveries(
 	if err != nil {
 		return fmt.Errorf("load enabled endpoints: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			f.logger.Warn("failed to close enabled endpoints cursor", "error", err)
+		}
+	}()
 
 	now := time.Now().UTC()
 

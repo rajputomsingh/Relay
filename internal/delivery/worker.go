@@ -501,7 +501,10 @@ func (w *Worker) processOne(ctx context.Context) error {
 		deliveryAttempts.WithLabelValues(delivery.EndpointID.Hex(), "error").Inc()
 		return w.recordFailure(ctx, delivery, err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// The response body is discarded; cleanup must not retry an already delivered webhook.
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		deliveryAttempts.WithLabelValues(delivery.EndpointID.Hex(), "success").Inc()

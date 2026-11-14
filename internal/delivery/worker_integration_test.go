@@ -260,7 +260,11 @@ func readWorkerAttempts(
 	if err != nil {
 		t.Fatalf("find delivery attempts: %v", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			t.Errorf("close attempts cursor: %v", err)
+		}
+	}()
 
 	var attempts []Attempt
 	if err := cursor.All(ctx, &attempts); err != nil {

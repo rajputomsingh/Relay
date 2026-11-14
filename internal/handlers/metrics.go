@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -267,7 +268,11 @@ func (s *mongoMetricsStore) Snapshot(
 			err,
 		)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close endpoint delivery metrics cursor", "error", err)
+		}
+	}()
 
 	for cursor.Next(ctx) {
 		var row endpointStatusCount
@@ -396,7 +401,11 @@ func (s *mongoMetricsStore) Snapshot(
 			err,
 		)
 	}
-	defer durCursor.Close(ctx)
+	defer func() {
+		if err := durCursor.Close(ctx); err != nil {
+			slog.Warn("failed to close delivery duration cursor", "error", err)
+		}
+	}()
 
 	if durCursor.Next(ctx) {
 		var result durationAggregation

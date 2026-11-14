@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -209,7 +210,11 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 	if err != nil {
 		return endpointHealth{}, fmt.Errorf("aggregate attempt counts: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close attempt counts cursor", "error", err)
+		}
+	}()
 
 	var counts []struct {
 		Outcome string `bson:"_id"`
@@ -268,7 +273,11 @@ func (s *mongoEndpointHealthStore) deliveryHistory(
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("find delivery history: %w", err)
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if err := cursor.Close(ctx); err != nil {
+			slog.Warn("failed to close delivery history cursor", "error", err)
+		}
+	}()
 
 	var lastSuccess, lastFailure *time.Time
 	var consecutive int64
