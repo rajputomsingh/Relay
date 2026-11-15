@@ -53,18 +53,3 @@ func saveConfig(cfg *Config) error {
 	}
 	return os.WriteFile(path, data, 0o600)
 }
-
-// resolveAPIKey returns the flag value if set, else the config value.
-func resolveAPIKey(flagKey string) (string, error) {
-	if flagKey != "" {
-		return flagKey, nil
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return "", err
-	}
-	if cfg.APIKey == "" {
-		return "", fmt.Errorf("no API key: run `relay-cli login --api-key <key>` or pass --api-key")
-	}
-	return cfg.APIKey, nil
-}
