@@ -211,3 +211,41 @@ The CLI should compile successfully and pass the configured lint checks before s
 ---
 
 Part of the [Relay](https://github.com/rajputomsingh/Relay) project.
+
+## Shell completion
+
+Relay CLI supports shell completion for PowerShell, Bash, Zsh, and Fish.
+
+### PowerShell
+
+Add this to your PowerShell profile (`$PROFILE`):
+
+```powershell
+relay-cli completion powershell | Out-String | Invoke-Expression
+```
+
+### Bash
+
+```bash
+source <(relay-cli completion bash)
+```
+
+To persist:
+
+```bash
+relay-cli completion bash > /etc/bash_completion.d/relay-cli
+```
+
+### Zsh
+
+```zsh
+relay-cli completion zsh > "${fpath[1]}/_relay-cli"
+```
+
+### Fish
+
+```fish
+relay-cli completion fish > ~/.config/fish/completions/relay-cli.fish
+```
+
+After installation, restart your shell and use Tab completion.
