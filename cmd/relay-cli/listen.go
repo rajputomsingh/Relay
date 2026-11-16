@@ -124,5 +124,8 @@ func forward(ctx context.Context, target, secret string, ev relay.EventInspectio
 		resp.StatusCode,
 		time.Since(start).Round(time.Millisecond),
 	)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("forward returned %d", resp.StatusCode)
+	}
 	return nil
 }
