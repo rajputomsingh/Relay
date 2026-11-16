@@ -1,4 +1,4 @@
-GOLANGCI_LINT_VERSION := 2.15.0
+﻿GOLANGCI_LINT_VERSION := 2.15.0
 GOLANGCI_LINT ?= golangci-lint
 
 .PHONY: build test lint run docker-build docker-up docker-down monitoring-up monitoring-down
@@ -38,3 +38,6 @@ monitoring-up:
 
 monitoring-down:
 	docker compose -f docker-compose.monitoring.yml down
+
+cli:
+	go build -o bin/relay-cli.exe ./cmd/relay-cli
