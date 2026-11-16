@@ -38,3 +38,6 @@ monitoring-up:
 
 monitoring-down:
 	docker compose -f docker-compose.monitoring.yml down
+
+cli:
+	go build -o bin/relay-cli.exe ./cmd/relay-cli

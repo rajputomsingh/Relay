@@ -51,3 +51,10 @@ issue-81-*.md
 pr-*.md
 relay-issues.ps1
 deliveries-index-*.txt
+.env
+
+# CLI build output and local test artifacts
+/bin/
+payload.json
+compat.json
+receiver.py
