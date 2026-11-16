@@ -252,3 +252,15 @@ func (c *Client) DisableEndpoint(
 	}
 	return &resp, nil
 }
+
+// DeleteEndpoint permanently removes an endpoint by ID.
+func (c *Client) DeleteEndpoint(ctx context.Context, endpointID string) error {
+	if endpointID == "" {
+		return fmt.Errorf("delete endpoint: endpointID is required")
+	}
+	req, err := c.newRequest(ctx, http.MethodDelete, "/v1/endpoints/"+url.PathEscape(endpointID), nil)
+	if err != nil {
+		return err
+	}
+	return c.do(req, nil)
+}
