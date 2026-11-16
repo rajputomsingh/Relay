@@ -31,6 +31,15 @@
   </a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/rajputomsingh/relay/releases/latest">
+    <img src="https://img.shields.io/github/v/release/rajputomsingh/relay?style=flat-square&label=latest%20release" alt="Latest Release" />
+  </a>
+  <a href="https://github.com/rajputomsingh/relay/releases/latest">
+    <img src="https://img.shields.io/badge/relay--cli-v1.4.0-00ADD8?style=flat-square&logo=go&logoColor=white" alt="relay-cli" />
+  </a>
+</p>
+
 Relay is a self-hosted webhook delivery service written in Go, with MongoDB as its persistence layer. It accepts events over HTTP and delivers them asynchronously to registered endpoints.
 
 Webhook delivery becomes difficult when receiving services go offline, requests time out, or workers stop unexpectedly. Applications often end up implementing their own retry logic, queues, and delivery tracking. Relay handles these parts separately so the application sending an event does not have to manage every delivery attempt.
@@ -39,7 +48,7 @@ Webhook delivery becomes difficult when receiving services go offline, requests 
 
 Relay supports event ingestion, idempotency, concurrent delivery workers, automatic retries, delivery tracking, and event replay. It uses expiring leases and fencing to recover work left behind by failed workers. Outgoing webhooks can also be signed using HMAC-SHA256.
 
-The project includes Prometheus metrics, Grafana dashboards, Docker deployment support, and official SDKs for Go, Node.js, and Python.
+The project includes Prometheus metrics, Grafana dashboards, Docker deployment support, official SDKs for Go, Node.js, and Python, and `relay-cli` for local development.
 
 ## Architecture
 
@@ -100,6 +109,33 @@ curl http://localhost:8080/v1/health
 ```
 
 If the containers fail to start or Relay cannot reach MongoDB, see the [Docker Compose troubleshooting guide](docs/deployment.md#troubleshooting).
+
+## relay-cli
+
+The fastest way to test webhooks locally. Download the binary for your platform from the [latest release](https://github.com/rajputomsingh/relay/releases/latest), then:
+
+```bash
+relay-cli login --api-key <your-key>
+relay-cli endpoints list
+relay-cli events send --source my-app --type user.created --data '{"user_id":"u_1"}'
+```
+
+Forward events to a local receiver, the same way `stripe listen` works:
+
+```bash
+relay-cli listen --forward-to http://localhost:3000/webhook --secret whsec_...
+```
+
+Each forwarded request includes `X-Relay-Event-ID`, `X-Relay-Timestamp`, and `X-Relay-Signature` (HMAC-SHA256).
+
+| Command                                         | Purpose                                     |
+| ----------------------------------------------- | ------------------------------------------- |
+| `relay-cli login`                               | Save your API key to `~/.relay/config.json` |
+| `relay-cli endpoints create/list/update/delete` | Manage endpoints                            |
+| `relay-cli events send/list/replay`             | Send, inspect, and replay events            |
+| `relay-cli listen`                              | Forward signed events to a local receiver   |
+
+Available for Linux (amd64/arm64), macOS (Intel/Apple Silicon), and Windows (amd64). Each binary is published with SHA256 checksums. See [docs/cli.md](docs/cli.md) for full usage and shell completion setup.
 
 ## Sending Events
 
@@ -244,13 +280,13 @@ Health checks, delivery attempt history, graceful shutdown, and lease recovery a
 }
 ```
 
-| Field | Values | Meaning |
-| --- | --- | --- |
-| `status` | `ok`, `degraded`, `down` | `down` when MongoDB is unreachable, `degraded` when the worker is not `ok`, otherwise `ok` |
-| `mongo` | `ok`, `unreachable` | MongoDB answered a ping within 2 seconds |
-| `worker` | `ok`, `stale`, `disabled` | `stale` when the delivery worker has not polled for more than three poll intervals, `disabled` when it never started; omitted when MongoDB is unreachable |
-| `version` | string | build version, `dev` unless set with `-ldflags "-X main.version=<version>"` |
-| `uptime_seconds` | integer | seconds since the process started |
+| Field            | Values                    | Meaning                                                                                                                                                   |
+| ---------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`         | `ok`, `degraded`, `down`  | `down` when MongoDB is unreachable, `degraded` when the worker is not `ok`, otherwise `ok`                                                                |
+| `mongo`          | `ok`, `unreachable`       | MongoDB answered a ping within 2 seconds                                                                                                                  |
+| `worker`         | `ok`, `stale`, `disabled` | `stale` when the delivery worker has not polled for more than three poll intervals, `disabled` when it never started; omitted when MongoDB is unreachable |
+| `version`        | string                    | build version, `dev` unless set with `-ldflags "-X main.version=<version>"`                                                                               |
+| `uptime_seconds` | integer                   | seconds since the process started                                                                                                                         |
 
 The endpoint returns `200` for `ok` and `degraded`, and `503` for `down`. An idle worker that finds nothing to deliver still reports `ok`, because worker health comes from its last poll rather than its last delivery. For per-destination health, use `GET /v1/endpoints/{id}/health`.
 
@@ -306,7 +342,27 @@ Relay currently targets single-tenant deployments. Tenant isolation and per-tena
 
 ## Roadmap
 
-Upcoming work includes tenant isolation, a web dashboard for event inspection and replay, expanded end-to-end testing, and further improvements to performance, observability, and webhook security.
+### Delivered
+
+- [x] Go HTTP server and MongoDB persistence
+- [x] Event ingestion with idempotency
+- [x] Asynchronous delivery workers
+- [x] Automatic retries and lease recovery
+- [x] Delivery history and event replay
+- [x] HMAC-SHA256 webhook signing
+- [x] Docker and Docker Compose
+- [x] Prometheus metrics and Grafana dashboards
+- [x] OpenAPI and Swagger documentation
+- [x] CI/CD pipeline with `golangci-lint`
+- [x] Official Go, Node.js, and Python SDKs
+- [x] `relay-cli` with signed `listen` forwarding (v1.4.0)
+
+### Planned
+
+- [ ] Tenant isolation and multi-tenant authorization (see [RFC](docs/rfcs/0001-multi-tenant.md))
+- [ ] Web dashboard for event inspection and replay
+- [ ] Replay attack protection with timestamped HMAC
+- [ ] Automated SDK releases
 
 ## Contributing
 
