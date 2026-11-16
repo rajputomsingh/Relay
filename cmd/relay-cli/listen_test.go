@@ -31,7 +31,7 @@ func TestForwardPostsWithSignature(t *testing.T) {
 	defer srv.Close()
 
 	ev := relay.EventInspection{ID: "evt_test123", Source: "test", EventType: "test.ping"}
-	secret := "whsec_test1234567890abcdef1234567890"
+	secret := "test-signing-secret-not-real-1234567890"
 	if err := forward(context.Background(), srv.URL, secret, ev); err != nil {
 		t.Fatalf("forward: %v", err)
 	}
