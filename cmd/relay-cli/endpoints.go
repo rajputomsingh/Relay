@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	relay "github.com/rajputomsingh/relay/sdk-go"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ func newEndpointsCmd() *cobra.Command {
 	cmd.AddCommand(
 		newEndpointsCreateCmd(),
 		newEndpointsListCmd(),
+		newEndpointsHealthCmd(),
 		newEndpointsUpdateCmd(),
 		newEndpointsDeleteCmd(),
 	)
@@ -199,4 +201,37 @@ func newEndpointsDeleteCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&skipConfirm, "yes", false, "Skip confirmation")
 	return cmd
+}
+
+func newEndpointsHealthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "health <id>",
+		Short: "Show delivery health for an endpoint",
+		Long:  "Show delivery health for an endpoint, including statistics for the past hour, consecutive failures, and the latest success and failure timestamps. Missing timestamps are shown as an em-dash (—).",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			key, err := resolveAPIKey(apiKey)
+			if err != nil {
+				return err
+			}
+			client := relay.NewClient(key, relay.WithBaseURL(apiURL))
+			health, err := client.GetEndpointHealth(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(),
+				"success_rate_1h: %g\nattempts_1h: %d\nsuccesses_1h: %d\nfailures_1h: %d\nconsecutive_failures: %d\nlast_success_at: %s\nlast_failure_at: %s\n",
+				health.SuccessRate1h, health.Attempts1h, health.Successes1h,
+				health.Failures1h, health.ConsecutiveFailures,
+				formatHealthTimestamp(health.LastSuccessAt), formatHealthTimestamp(health.LastFailureAt))
+			return err
+		},
+	}
+}
+
+func formatHealthTimestamp(timestamp *time.Time) string {
+	if timestamp == nil {
+		return "—"
+	}
+	return timestamp.Format(time.RFC3339Nano)
 }
