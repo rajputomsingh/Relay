@@ -21,6 +21,10 @@ config:
     - any-glob-to-any-file: 'internal/config/**'
     - any-glob-to-any-file: 'cmd/relay/**'
 
+cli:
+  - changed-files:
+    - any-glob-to-any-file: 'cmd/relay-cli/**'
+
 ci-cd:
   - changed-files:
     - any-glob-to-any-file: '.github/workflows/**'
