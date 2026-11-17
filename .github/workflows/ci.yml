@@ -62,12 +62,13 @@ jobs:
           version: v2.15.0 # Keep in sync with GOLANGCI_LINT_VERSION in Makefile.
           args: --config=.golangci.yml ./...
 
-      - name: go test
+      - name: go test (race detector)
         env:
+          CGO_ENABLED: "1" # Required by the Go race detector.
           MONGODB_TEST_URI: mongodb://127.0.0.1:27017
           RELAY_API_KEY: "test-key-1234567890-abcdefghijklmnop"
           APP_ENV: development
-        run: go test -v -count=1 ./...
+        run: go test -race -v -count=1 ./...
 
   node-sdk:
     name: Node SDK
