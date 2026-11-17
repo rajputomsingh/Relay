@@ -102,6 +102,21 @@ relay-cli listen `
   --secret whsec_...
 ```
 
+To forward only selected sources and event types, use client-side filters:
+
+```powershell
+relay-cli listen `
+  --forward-to http://localhost:3000/webhook `
+  --filter-source "my-app,other-app" `
+  --filter-type "user.created,user.updated"
+```
+
+Values match exactly and are case-sensitive. An event may match any value within
+one flag, but must match both flags when both are set. Whitespace around values
+and empty comma-separated entries are ignored; an empty filter accepts all values.
+Non-matching events are neither forwarded nor printed. Filtering happens locally
+after events are fetched and does not change the server-side event list.
+
 Each forwarded request includes the following headers:
 
 | Header              | Description                        |
