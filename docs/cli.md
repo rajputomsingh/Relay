@@ -70,18 +70,18 @@ relay-cli endpoints health ep_example
 Example output:
 
 ```text
-success_rate_1h: 95
-attempts_1h: 100
-successes_1h: 95
-failures_1h: 5
-consecutive_failures: 0
-last_success_at: 2026-11-17T09:30:00Z
-last_failure_at: 2026-11-17T09:00:00Z
+success rate (1h):     95%
+attempts (1h):         100
+successes (1h):        95
+failures (1h):         5
+consecutive failures:  0
+last success:          2026-11-17T09:30:00Z
+last failure:          2026-11-17T09:00:00Z
 ```
 
 The success rate is a percentage from 0 to 100. The rate and attempt counts cover
 the past hour; consecutive failures and the latest timestamps reflect delivery
-history. Timestamps use RFC 3339 format and appear as `—` when no corresponding
+history. Timestamps use RFC 3339 format and appear as `-` when no corresponding
 delivery exists. Use `relay-cli endpoints health --help` for command help.
 
 ## Sending Events
