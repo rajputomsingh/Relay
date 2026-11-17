@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   welcome:
-    name: 👋🏻 Welcome contributor
+    name: Welcome contributor
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
@@ -26,7 +26,7 @@ jobs:
           script: |
             const pr = context.payload.pull_request;
             const body = [
-              `👋🏻 Welcome to Relay, @${pr.user.login}! Thanks for your first contribution.`,
+              `Welcome to Relay, @${pr.user.login}! Thanks for your first contribution.`,
               '',
               '**What happens next:**',
               '',
