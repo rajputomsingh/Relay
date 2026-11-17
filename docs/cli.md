@@ -59,6 +59,31 @@ relay-cli endpoints create `
   --secret whsec_...
 ```
 
+### Check endpoint health
+
+Retrieve delivery health for an endpoint:
+
+```powershell
+relay-cli endpoints health ep_example
+```
+
+Example output:
+
+```text
+success_rate_1h: 95
+attempts_1h: 100
+successes_1h: 95
+failures_1h: 5
+consecutive_failures: 0
+last_success_at: 2026-11-17T09:30:00Z
+last_failure_at: 2026-11-17T09:00:00Z
+```
+
+The success rate is a percentage from 0 to 100. The rate and attempt counts cover
+the past hour; consecutive failures and the latest timestamps reflect delivery
+history. Timestamps use RFC 3339 format and appear as `—` when no corresponding
+delivery exists. Use `relay-cli endpoints health --help` for command help.
+
 ## Sending Events
 
 Send events to Relay using the CLI:
@@ -174,6 +199,7 @@ relay-cli listen --forward-to http://localhost:3000/webhook
 | `relay-cli --help`           | Display available commands                     |
 | `relay-cli login`            | Authenticate using an API key                  |
 | `relay-cli endpoints list`   | List registered endpoints                      |
+| `relay-cli endpoints health <id>` | Show endpoint delivery health             |
 | `relay-cli endpoints create` | Register a webhook endpoint                    |
 | `relay-cli events send`      | Publish an event                               |
 | `relay-cli listen`           | Forward incoming events to a local application |
