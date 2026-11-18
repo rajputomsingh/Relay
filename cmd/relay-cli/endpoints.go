@@ -207,7 +207,7 @@ func newEndpointsHealthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "health <id>",
 		Short: "Show delivery health for an endpoint",
-		Long:  "Show delivery health for an endpoint, including statistics for the past hour, consecutive failures, and the latest success and failure timestamps. Missing timestamps are shown as an em-dash (—).",
+		Long:  "Show delivery health for an endpoint, including statistics for the past hour, consecutive failures, and the latest success and failure timestamps. Missing timestamps are shown as a dash (-).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key, err := resolveAPIKey(apiKey)
@@ -217,21 +217,25 @@ func newEndpointsHealthCmd() *cobra.Command {
 			client := relay.NewClient(key, relay.WithBaseURL(apiURL))
 			health, err := client.GetEndpointHealth(cmd.Context(), args[0])
 			if err != nil {
-				return err
+				return fmt.Errorf("get endpoint health: %w", err)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(),
-				"success_rate_1h: %g\nattempts_1h: %d\nsuccesses_1h: %d\nfailures_1h: %d\nconsecutive_failures: %d\nlast_success_at: %s\nlast_failure_at: %s\n",
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+			_, err = fmt.Fprintf(w,
+				"success rate (1h):\t%g%%\nattempts (1h):\t%d\nsuccesses (1h):\t%d\nfailures (1h):\t%d\nconsecutive failures:\t%d\nlast success:\t%s\nlast failure:\t%s\n",
 				health.SuccessRate1h, health.Attempts1h, health.Successes1h,
 				health.Failures1h, health.ConsecutiveFailures,
 				formatHealthTimestamp(health.LastSuccessAt), formatHealthTimestamp(health.LastFailureAt))
-			return err
+			if err != nil {
+				return err
+			}
+			return w.Flush()
 		},
 	}
 }
 
 func formatHealthTimestamp(timestamp *time.Time) string {
 	if timestamp == nil {
-		return "—"
+		return "-"
 	}
 	return timestamp.Format(time.RFC3339Nano)
 }
