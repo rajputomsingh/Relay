@@ -74,6 +74,8 @@ func (h *EventsHandler) Register(mux *http.ServeMux) {
 // @Success      202  {object}  map[string]interface{}
 // @Failure      401  {object}  map[string]string
 // @Failure      400  {object}  map[string]string
+// @Failure      413  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
 // @Router       /v1/events [post]
 func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
