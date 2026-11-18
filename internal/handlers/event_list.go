@@ -133,6 +133,7 @@ func encodeEventListCursor(cursor eventListCursor) (string, error) {
 // @Success      200  {object}  eventListResponse
 // @Failure      400  {object}  map[string]string
 // @Failure      401  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
 // @Failure      503  {object}  map[string]string
 // @Router       /v1/events [get]
 func (h *EventsListHandler) list(w http.ResponseWriter, r *http.Request) {

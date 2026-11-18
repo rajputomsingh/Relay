@@ -26,6 +26,7 @@ import (
 // @Failure      400  {object}  map[string]string
 // @Failure      401  {object}  map[string]string
 // @Failure      409  {object}  map[string]string
+// @Failure      500  {object}  map[string]string
 // @Failure      503  {object}  map[string]string
 // @Router       /v1/events/{id}/replay [post]
 func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
