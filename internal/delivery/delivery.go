@@ -17,6 +17,7 @@ const (
 // Delivery represents one (event, endpoint) pair and its lifecycle.
 type Delivery struct {
 	ID            bson.ObjectID `bson:"_id,omitempty"          json:"id"`
+	TenantID      string        `bson:"tenant_id,omitempty" json:"-"`
 	EventID       bson.ObjectID `bson:"event_id"               json:"event_id"`
 	EndpointID    bson.ObjectID `bson:"endpoint_id"            json:"endpoint_id"`
 	Status        string        `bson:"status"                 json:"status"`
