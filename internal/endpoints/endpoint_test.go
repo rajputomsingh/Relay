@@ -1,6 +1,11 @@
 package endpoints
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
 
 func TestEndpointValidate(t *testing.T) {
 	valid := Endpoint{
@@ -199,5 +204,59 @@ func TestEventFilterMatches(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+func TestEndpointTenantIDBSONSerialization(t *testing.T) {
+	endpoint := Endpoint{
+		TenantID: "tenant_123",
+		Name:     "billing",
+		URL:      "https://example.com/hook",
+		Enabled:  true,
+	}
+
+	data, err := bson.Marshal(endpoint)
+	if err != nil {
+		t.Fatalf("bson.Marshal() error = %v", err)
+	}
+
+	var decoded bson.M
+	if err := bson.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("bson.Unmarshal() error = %v", err)
+	}
+
+	got, ok := decoded["tenant_id"]
+	if !ok {
+		t.Fatal("tenant_id field missing from BSON")
+	}
+
+	if got != "tenant_123" {
+		t.Fatalf("tenant_id = %v, want %q", got, "tenant_123")
+	}
+}
+
+func TestEndpointTenantIDExcludedFromJSON(t *testing.T) {
+	endpoint := Endpoint{
+		TenantID: "tenant_123",
+		Name:     "billing",
+		URL:      "https://example.com/hook",
+		Enabled:  true,
+	}
+
+	data, err := json.Marshal(endpoint)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	if string(data) == "" {
+		t.Fatal("JSON output is empty")
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if _, ok := decoded["tenant_id"]; ok {
+		t.Fatal("tenant_id must not be exposed in JSON")
 	}
 }

@@ -16,6 +16,11 @@ var RequiredIndexes = map[string][]string{
 	"endpoints": {
 		"uniq_endpoint_name",
 		"idx_endpoint_enabled",
+		"idx_endpoint_tenant_name",
+		"idx_endpoint_tenant_enabled",
+	},
+	"events": {
+		"idx_event_tenant_received",
 	},
 	"deliveries": {
 		"uniq_delivery_event_endpoint",
@@ -23,6 +28,8 @@ var RequiredIndexes = map[string][]string{
 		"idx_delivery_lease",
 		"idx_delivery_endpoint_status",
 		"idx_delivery_event",
+		"idx_delivery_tenant_endpoint_status",
+		"idx_delivery_tenant_event",
 	},
 	"delivery_attempts": {
 		"idx_attempts_endpoint_started",
@@ -31,12 +38,13 @@ var RequiredIndexes = map[string][]string{
 }
 
 // EnsureMultiEndpointIndexes creates the indexes required by the
-// endpoints and deliveries collections.
+// endpoints, events, and deliveries collections.
 func EnsureMultiEndpointIndexes(
 	ctx context.Context,
 	db *mongo.Database,
 ) error {
 	endpoints := db.Collection("endpoints")
+	events := db.Collection("events")
 	deliveries := db.Collection("deliveries")
 	attempts := db.Collection("delivery_attempts")
 
@@ -51,6 +59,33 @@ func EnsureMultiEndpointIndexes(
 			Keys: bson.D{{Key: "enabled", Value: 1}},
 			Options: options.Index().
 				SetName("idx_endpoint_enabled"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "tenant_id", Value: 1},
+				{Key: "name", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_endpoint_tenant_name"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "tenant_id", Value: 1},
+				{Key: "enabled", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_endpoint_tenant_enabled"),
+		},
+	}
+
+	eventIndexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "tenant_id", Value: 1},
+				{Key: "received_at", Value: -1},
+			},
+			Options: options.Index().
+				SetName("idx_event_tenant_received"),
 		},
 	}
 
@@ -103,6 +138,23 @@ func EnsureMultiEndpointIndexes(
 			Options: options.Index().
 				SetName("idx_delivery_event"),
 		},
+		{
+			Keys: bson.D{
+				{Key: "tenant_id", Value: 1},
+				{Key: "endpoint_id", Value: 1},
+				{Key: "status", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_delivery_tenant_endpoint_status"),
+		},
+		{
+			Keys: bson.D{
+				{Key: "tenant_id", Value: 1},
+				{Key: "event_id", Value: 1},
+			},
+			Options: options.Index().
+				SetName("idx_delivery_tenant_event"),
+		},
 	}
 
 	attemptIndexes := []mongo.IndexModel{
@@ -128,9 +180,15 @@ func EnsureMultiEndpointIndexes(
 	if _, err := endpoints.Indexes().CreateMany(ctx, endpointIndexes); err != nil {
 		return fmt.Errorf("create endpoint indexes: %w", err)
 	}
+
+	if _, err := events.Indexes().CreateMany(ctx, eventIndexes); err != nil {
+		return fmt.Errorf("create event indexes: %w", err)
+	}
+
 	if _, err := deliveries.Indexes().CreateMany(ctx, deliveryIndexes); err != nil {
 		return fmt.Errorf("create delivery indexes: %w", err)
 	}
+
 	if _, err := attempts.Indexes().CreateMany(ctx, attemptIndexes); err != nil {
 		return fmt.Errorf("create attempt endpoint indexes: %w", err)
 	}
@@ -166,6 +224,7 @@ func VerifyIndexes(
 				existing[name] = struct{}{}
 			}
 		}
+
 		if err := cursor.Err(); err != nil {
 			_ = cursor.Close(ctx)
 			return nil, fmt.Errorf("iterate indexes for %s: %w", collName, err)

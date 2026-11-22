@@ -53,6 +53,7 @@ func (f EventFilter) Matches(source, eventType string) bool {
 // Endpoint is a webhook destination.
 type Endpoint struct {
 	ID            bson.ObjectID `bson:"_id,omitempty"             json:"id"`
+	TenantID      string        `bson:"tenant_id,omitempty" json:"-"`
 	Name          string        `bson:"name"                      json:"name"`
 	URL           string        `bson:"url"                       json:"url"`
 	SigningSecret string        `bson:"signing_secret,omitempty"  json:"-"`
