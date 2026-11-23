@@ -16,12 +16,14 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/config"
 	"github.com/rajputomsingh/relay/internal/database"
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
 	"github.com/rajputomsingh/relay/internal/reconciler"
+	"github.com/rajputomsingh/relay/internal/tenant"
 
 	_ "github.com/rajputomsingh/relay/docs"
 	httpSwagger "github.com/swaggo/http-swagger"
@@ -58,7 +60,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Effective security configuration — logged so operators can verify
+	// Effective security configuration - logged so operators can verify
 	// what is actually active without inspecting env vars or code.
 	slog.Info("effective security configuration",
 		"environment", cfg.Environment,
@@ -66,6 +68,7 @@ func main() {
 		"ssrf_guard_enabled", !cfg.AllowPrivateWebhookURLs,
 		"webhook_configured", cfg.WebhookURL != "",
 		"allow_private_webhook_urls", cfg.AllowPrivateWebhookURLs,
+		"legacy_tenant_id_set", cfg.LegacyTenantIDValue != "",
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,6 +101,15 @@ func main() {
 	indexCtx, indexCancel := context.WithTimeout(ctx, 30*time.Second)
 	if err := database.EnsureMultiEndpointIndexes(indexCtx, db); err != nil {
 		slog.Error("failed to ensure indexes", "error", err)
+	}
+
+	// PR #172: api_keys collection + unique index on key_hash.
+	apiKeysCollection := db.Collection("api_keys")
+	if _, err := apiKeysCollection.Indexes().CreateOne(indexCtx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "key_hash", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("uniq_key_hash"),
+	}); err != nil {
+		slog.Error("failed to ensure api_keys index", "error", err)
 	}
 	indexCancel()
 
@@ -184,9 +196,40 @@ func main() {
 	)
 	endpointHealthHandler.Register(mux)
 
+	// PR #172: trusted tenant resolution in front of all protected routes.
+	// Handlers still receive cfg.RelayAPIKey for now (belt-and-suspenders);
+	// a later PR removes the per-handler checks once Mongo keys are live.
+	legacyResolver := auth.LegacyResolver{
+		Key:    cfg.RelayAPIKey,
+		Tenant: tenant.TenantID(cfg.LegacyTenantIDValue),
+	}
+
+	var resolver auth.Resolver = legacyResolver
+
+	// Phase 2 intentionally uses only the legacy resolver.
+	// Mongo-backed key authentication is deferred to #173 because:
+	//   - no key-issuance path exists yet (no way to mint a record)
+	//   - handlers still enforce cfg.RelayAPIKey and would 401 any
+	//     valid Mongo key until they are removed
+	//
+	// #173 must wire this and remove handler checks in the same
+	// commit - dual-auth mismatch otherwise.
+	//   resolver = auth.ChainResolver{
+	//       legacyResolver,
+	//       auth.MongoResolver{Coll: apiKeysCollection},
+	//   }
+
+	public := []string{
+		"/healthz",
+		"/readyz",
+		"/v1/health",
+		"/swagger/",
+	}
+	authMiddleware := auth.Middleware(resolver, public)
+
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           mux,
+		Handler:           authMiddleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

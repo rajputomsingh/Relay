@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
@@ -11,6 +14,7 @@ func setValidEnvironment(t *testing.T) {
 		"MONGODB_URI":                  "mongodb://localhost:27017",
 		"MONGODB_DATABASE":             "relay",
 		"RELAY_API_KEY":                "0123456789abcdef0123456789abcdef",
+		"RELAY_LEGACY_TENANT_ID":       "test-tenant",
 		"RELAY_WEBHOOK_URL":            "",
 		"RELAY_WORKER_POLL_SECONDS":    "2",
 		"RELAY_WORKER_CONCURRENCY":     "4",
@@ -173,6 +177,7 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 			name: "API key too short",
 			change: func() {
 				t.Setenv("RELAY_API_KEY", "short")
+				t.Setenv("RELAY_LEGACY_TENANT_ID", "test-tenant")
 			},
 		},
 		{
@@ -295,6 +300,7 @@ func TestLoadAcceptsHTTPSWebhookInProduction(t *testing.T) {
 		t.Fatalf("Load() rejected valid production configuration: %v", err)
 	}
 }
+
 func TestLoadRejectsInvalidSigningConfiguration(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -402,5 +408,35 @@ func TestLoadAcceptsProductionWebhookWithSigning(t *testing.T) {
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load() rejected valid production config: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------
+// PR #172: legacy tenant mapping (RFC #76)
+// ---------------------------------------------------------------
+
+func TestLoadRequiresLegacyTenantIDWhenAPIKeySet(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_LEGACY_TENANT_ID", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when RELAY_API_KEY set without RELAY_LEGACY_TENANT_ID")
+	}
+	if !strings.Contains(err.Error(), "RELAY_LEGACY_TENANT_ID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadAcceptsLegacyTenantID(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("RELAY_LEGACY_TENANT_ID", "legacy")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LegacyTenantIDValue != "legacy" {
+		t.Fatalf("LegacyTenantIDValue = %q, want legacy", cfg.LegacyTenantIDValue)
 	}
 }
