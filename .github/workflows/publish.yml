@@ -20,6 +20,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set version from tag
+        working-directory: sdk-python
+        run: |
+          VERSION="${GITHUB_REF_NAME#sdk-python-v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" relay_python/__init__.py
+
       - name: Install build tools
         run: pip install build
 
