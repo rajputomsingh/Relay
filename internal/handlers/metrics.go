@@ -75,6 +75,10 @@ type mongoMetricsStore struct {
 	deliveries *mongo.Collection
 }
 
+// TODO(#173): remove the apiKey field once ChainResolver is wired.
+// Keeps legacy RELAY_API_KEY as the single source of truth until
+// Mongo auth lands. Removing this before #173 wires ChainResolver
+// would break dual-auth consistency.
 type MetricsHandler struct {
 	store  metricsStore
 	health workerHealth

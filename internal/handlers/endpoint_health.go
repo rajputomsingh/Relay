@@ -54,6 +54,10 @@ type endpointHealthResponse struct {
 }
 
 // EndpointHealthHandler exposes per-endpoint delivery health over HTTP.
+// TODO(#173): remove the apiKey field once ChainResolver is wired.
+// Keeps legacy RELAY_API_KEY as the single source of truth until
+// Mongo auth lands. Removing this before #173 wires ChainResolver
+// would break dual-auth consistency.
 type EndpointHealthHandler struct {
 	endpoints endpointsStore
 	health    endpointHealthStore

@@ -205,8 +205,19 @@ func main() {
 	}
 
 	var resolver auth.Resolver = legacyResolver
-	// Uncomment to enable Mongo-backed keys in the same rollout:
-	// resolver = auth.ChainResolver{legacyResolver, auth.MongoResolver{Coll: apiKeysCollection}}
+
+	// Phase 2 intentionally uses only the legacy resolver.
+	// Mongo-backed key authentication is deferred to #173 because:
+	//   - no key-issuance path exists yet (no way to mint a record)
+	//   - handlers still enforce cfg.RelayAPIKey and would 401 any
+	//     valid Mongo key until they are removed
+	//
+	// #173 must wire this and remove handler checks in the same
+	// commit - dual-auth mismatch otherwise.
+	//   resolver = auth.ChainResolver{
+	//       legacyResolver,
+	//       auth.MongoResolver{Coll: apiKeysCollection},
+	//   }
 
 	public := []string{
 		"/healthz",
