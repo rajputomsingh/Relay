@@ -28,6 +28,9 @@ type Config struct {
 	// Set true only for local development or when the operator controls
 	// the network topology.
 	AllowPrivateWebhookURLs bool
+	// LegacyTenantIDValue is the explicit tenant mapping for the legacy
+	// RELAY_API_KEY (RFC #76). Required when RELAY_API_KEY is set.
+	LegacyTenantIDValue string
 }
 
 func Load() (Config, error) {
@@ -62,6 +65,16 @@ func Load() (Config, error) {
 	}
 	if len(cfg.RelayAPIKey) < 32 {
 		return Config{}, errors.New("RELAY_API_KEY must contain at least 32 characters")
+	}
+
+	// PR #172: explicit, deterministic legacy tenant mapping (RFC #76).
+	// Required whenever RELAY_API_KEY is set, so no request can be
+	// silently assigned to an arbitrary tenant.
+	cfg.LegacyTenantIDValue = strings.TrimSpace(os.Getenv("RELAY_LEGACY_TENANT_ID"))
+	if cfg.RelayAPIKey != "" && cfg.LegacyTenantIDValue == "" {
+		return Config{}, errors.New(
+			"RELAY_LEGACY_TENANT_ID must be set when RELAY_API_KEY is configured (RFC #76)",
+		)
 	}
 
 	if cfg.Environment != "development" &&
