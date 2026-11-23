@@ -1,0 +1,55 @@
+name: Publish Node SDK to npm
+
+on:
+  push:
+    tags:
+      - "sdk-node-v*"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk-node
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: sdk-node/pnpm-lock.yaml
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#sdk-node-v}"
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm build
+        run: pnpm build
+
+      - name: pnpm test
+        run: pnpm test
+
+      - name: Publish to npm (Trusted Publishing)
+        run: npm publish --access public
