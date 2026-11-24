@@ -423,6 +423,36 @@ The delivery engine records attempts and outcomes, retries eligible failures wit
 
 For a deeper overview, see the [README](README.md) and the architecture documentation in `docs/`.
 
+## Releasing SDKs
+
+Each SDK is released independently by pushing a tag. The version is taken
+from the tag, so you don't need to edit version numbers by hand.
+
+| SDK | Tag format | Workflow | Published to |
+|---|---|---|---|
+| Python | `sdk-python-vX.Y.Z` | `.github/workflows/publish.yml` | PyPI |
+| Node | `sdk-node-vX.Y.Z` | `.github/workflows/publish-node.yml` | npm |
+| Go | `vX.Y.Z` | none needed | `go get` resolves the tag directly |
+
+Plain `v*` tags also trigger `release-cli.yml`, which builds the CLI binaries.
+
+To release, for example, Node SDK 2.1.0:
+
+```bash
+git tag sdk-node-v2.1.0
+git push origin sdk-node-v2.1.0
+```
+
+### Publishing credentials
+
+Both SDK workflows use **Trusted Publishing** (OIDC), so no `NPM_TOKEN` or
+`PYPI_TOKEN` secret is stored in the repo. A maintainer must configure it once:
+
+- **PyPI:** add a trusted publisher for this repo with workflow
+  `publish.yml` and environment `pypi`.
+- **npm:** add a trusted publisher for `@rajputomsingh/relay-node` with
+  workflow `publish-node.yml`.
+
 ## Bug Reports
 
 Before opening a bug report:
