@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-const testAPIKey = "test-relay-api-key-that-is-at-least-32-chars"
 
 func newEventTestServer() http.Handler {
 	mux := http.NewServeMux()

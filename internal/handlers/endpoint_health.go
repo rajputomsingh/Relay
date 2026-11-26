@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -19,7 +20,6 @@ const (
 	attemptOutcomeFailed    = "failed"
 )
 
-// endpointHealth holds the raw delivery statistics for one endpoint.
 type endpointHealth struct {
 	Attempts1h          int64
 	Successes1h         int64
@@ -33,10 +33,9 @@ type endpointHealth struct {
 }
 
 type endpointHealthStore interface {
-	Health(context.Context, bson.ObjectID, time.Time) (endpointHealth, error)
+	Health(context.Context, string, bson.ObjectID, time.Time) (endpointHealth, error)
 }
 
-// endpointHealthResponse is the API representation of endpoint health.
 type endpointHealthResponse struct {
 	SuccessRate1h       float64    `json:"success_rate_1h"`
 	Attempts1h          int64      `json:"attempts_1h"`
@@ -45,23 +44,15 @@ type endpointHealthResponse struct {
 	ConsecutiveFailures int64      `json:"consecutive_failures"`
 	LastSuccessAt       *time.Time `json:"last_success_at" extensions:"x-nullable"`
 	LastFailureAt       *time.Time `json:"last_failure_at" extensions:"x-nullable"`
-	// Approximate 50th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
-	P50LatencyMS *float64 `json:"p50_latency_ms" extensions:"x-nullable" example:"42"`
-	// Approximate 95th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
-	P95LatencyMS *float64 `json:"p95_latency_ms" extensions:"x-nullable" example:"187"`
-	// Approximate 99th percentile of successful attempt latencies in milliseconds over the past hour; null when no valid samples exist.
-	P99LatencyMS *float64 `json:"p99_latency_ms" extensions:"x-nullable" example:"512"`
+	P50LatencyMS        *float64   `json:"p50_latency_ms" extensions:"x-nullable" example:"42"`
+	P95LatencyMS        *float64   `json:"p95_latency_ms" extensions:"x-nullable" example:"187"`
+	P99LatencyMS        *float64   `json:"p99_latency_ms" extensions:"x-nullable" example:"512"`
 }
 
 // EndpointHealthHandler exposes per-endpoint delivery health over HTTP.
-// TODO(#173): remove the apiKey field once ChainResolver is wired.
-// Keeps legacy RELAY_API_KEY as the single source of truth until
-// Mongo auth lands. Removing this before #173 wires ChainResolver
-// would break dual-auth consistency.
 type EndpointHealthHandler struct {
 	endpoints endpointsStore
 	health    endpointHealthStore
-	apiKey    string
 	now       func() time.Time
 }
 
@@ -71,7 +62,6 @@ func NewEndpointHealthHandler(
 	endpointsStore endpointsStore,
 	deliveriesCollection *mongo.Collection,
 	attemptsCollection *mongo.Collection,
-	apiKey string,
 ) *EndpointHealthHandler {
 	return &EndpointHealthHandler{
 		endpoints: endpointsStore,
@@ -79,7 +69,6 @@ func NewEndpointHealthHandler(
 			deliveries: deliveriesCollection,
 			attempts:   attemptsCollection,
 		},
-		apiKey: apiKey,
 	}
 }
 
@@ -88,25 +77,8 @@ func (h *EndpointHealthHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/endpoints/{id}/health", h.serve)
 }
 
-// serve returns delivery health statistics for a single endpoint.
-//
-// @Summary      Get endpoint health
-// @Description  Returns delivery attempts, success rate, consecutive failures, and the latest success/failure timestamps for an endpoint.
-// @Description  Latency percentiles are approximate and use successful attempts from the same one-hour window. Attempts without a finished_at timestamp still count as successes but contribute no latency sample. All three percentiles are null when no valid samples exist; a measured zero is 0. Requires MongoDB 7.0+.
-// @Tags         endpoints
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Param        id path string true "Endpoint ID"
-// @Success      200 {object} endpointHealthResponse
-// @Failure      400 {object} map[string]string
-// @Failure      401 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Failure      503 {object} map[string]string
-// @Router       /v1/endpoints/{id}/health [get]
 func (h *EndpointHealthHandler) serve(w http.ResponseWriter, r *http.Request) {
-	if !authorizeRequest(w, r, h.apiKey) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	id, ok := parseEndpointID(w, r)
 	if !ok {
@@ -116,7 +88,7 @@ func (h *EndpointHealthHandler) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), endpointHealthTimeout)
 	defer cancel()
 
-	if _, err := h.endpoints.Get(ctx, id); err != nil {
+	if _, err := h.endpoints.Get(ctx, string(tid), id); err != nil {
 		writeEndpointStoreError(w, err, "get")
 		return
 	}
@@ -126,7 +98,7 @@ func (h *EndpointHealthHandler) serve(w http.ResponseWriter, r *http.Request) {
 		now = h.now().UTC()
 	}
 
-	health, err := h.health.Health(ctx, id, now)
+	health, err := h.health.Health(ctx, string(tid), id, now)
 	if err != nil {
 		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"error": "endpoint health temporarily unavailable",
@@ -164,15 +136,16 @@ type mongoEndpointHealthStore struct {
 
 func (s *mongoEndpointHealthStore) Health(
 	ctx context.Context,
+	tenantID string,
 	endpointID bson.ObjectID,
 	now time.Time,
 ) (endpointHealth, error) {
-	health, err := s.attemptCounts(ctx, endpointID, now.Add(-time.Hour))
+	health, err := s.attemptCounts(ctx, tenantID, endpointID, now.Add(-time.Hour))
 	if err != nil {
 		return endpointHealth{}, err
 	}
 
-	lastSuccess, lastFailure, consecutive, err := s.deliveryHistory(ctx, endpointID)
+	lastSuccess, lastFailure, consecutive, err := s.deliveryHistory(ctx, tenantID, endpointID)
 	if err != nil {
 		return endpointHealth{}, err
 	}
@@ -186,20 +159,19 @@ func (s *mongoEndpointHealthStore) Health(
 
 func (s *mongoEndpointHealthStore) attemptCounts(
 	ctx context.Context,
+	tenantID string,
 	endpointID bson.ObjectID,
 	cutoff time.Time,
 ) (endpointHealth, error) {
 	cursor, err := s.attempts.Aggregate(ctx, mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.D{
+			{Key: "tenant_id", Value: tenantID},
 			{Key: "endpoint_id", Value: endpointID},
 			{Key: "started_at", Value: bson.D{{Key: "$gte", Value: cutoff}}},
 		}}},
 		bson.D{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: "$outcome"},
 			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
-			// Keep every outcome in the counts, but only delivered attempts
-			// contribute latency samples. Missing timestamps produce null,
-			// which $percentile ignores rather than treating as zero.
 			{Key: "latencies", Value: bson.D{{Key: "$percentile", Value: bson.D{
 				{Key: "input", Value: bson.D{{Key: "$cond", Value: bson.A{
 					bson.D{{Key: "$eq", Value: bson.A{"$outcome", attemptOutcomeDelivered}}},
@@ -221,9 +193,8 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 	}()
 
 	var counts []struct {
-		Outcome string `bson:"_id"`
-		Count   int64  `bson:"count"`
-		// Nullable elements preserve the difference between no sample and 0ms.
+		Outcome   string     `bson:"_id"`
+		Count     int64      `bson:"count"`
 		Latencies []*float64 `bson:"latencies"`
 	}
 	if err := cursor.All(ctx, &counts); err != nil {
@@ -252,11 +223,13 @@ func (s *mongoEndpointHealthStore) attemptCounts(
 
 func (s *mongoEndpointHealthStore) deliveryHistory(
 	ctx context.Context,
+	tenantID string,
 	endpointID bson.ObjectID,
 ) (*time.Time, *time.Time, int64, error) {
 	cursor, err := s.deliveries.Find(
 		ctx,
 		bson.D{
+			{Key: "tenant_id", Value: tenantID},
 			{Key: "endpoint_id", Value: endpointID},
 			{Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{
 				attemptOutcomeDelivered, attemptOutcomeFailed,

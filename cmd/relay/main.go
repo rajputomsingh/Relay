@@ -182,17 +182,13 @@ func main() {
 	metricsHandler.Register(mux)
 	inspectionHandler.Register(mux)
 
-	endpointsHandler := handlers.NewEndpointsHandler(
-		endpointStore,
-		cfg.RelayAPIKey,
-	)
+	endpointsHandler := handlers.NewEndpointsHandler(endpointStore)
 	endpointsHandler.Register(mux)
 
 	endpointHealthHandler := handlers.NewEndpointHealthHandler(
 		endpointStore,
 		deliveriesCollection,
 		attemptsCollection,
-		cfg.RelayAPIKey,
 	)
 	endpointHealthHandler.Register(mux)
 
