@@ -282,6 +282,8 @@ type reconcilerFanoutAdapter struct {
 	fanout *delivery.Fanout
 }
 
-func (a *reconcilerFanoutAdapter) FanOutEvent(ctx context.Context, eventID bson.ObjectID, source, eventType string) error {
-	return a.fanout.CreateDeliveries(ctx, eventID, source, eventType)
+// FanOutEvent fans out with tenant scoping. The reconciler supplies the
+// tenant from the persisted EventRecord (no request context available).
+func (a *reconcilerFanoutAdapter) FanOutEvent(ctx context.Context, tid tenant.TenantID, eventID bson.ObjectID, source, eventType string) error {
+	return a.fanout.CreateDeliveries(ctx, tid, eventID, source, eventType)
 }

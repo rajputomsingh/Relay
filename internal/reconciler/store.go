@@ -27,6 +27,7 @@ func NewStore(db *mongo.Database) *Store {
 // EventRecord represents the minimal event data needed to re-trigger fan-out.
 type EventRecord struct {
 	ID        bson.ObjectID `bson:"_id"`
+	TenantID  string        `bson:"tenant_id"`
 	Source    string        `bson:"source"`
 	EventType string        `bson:"event_type"`
 }
@@ -38,12 +39,20 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 		bson.D{{Key: "$match", Value: bson.M{
 			"received_at":   bson.M{"$lt": threshold},
 			"fanout_status": bson.M{"$exists": false},
+			"tenant_id":     bson.M{"$exists": true, "$ne": ""},
 		}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
-			"from":         "deliveries",
-			"localField":   "_id",
-			"foreignField": "event_id",
-			"as":           "matching_deliveries",
+			"from": "deliveries",
+			"let":  bson.M{"eventID": "$_id", "tenantID": "$tenant_id"},
+			"pipeline": mongo.Pipeline{
+				bson.D{{Key: "$match", Value: bson.M{
+					"$expr": bson.M{"$and": bson.A{
+						bson.M{"$eq": bson.A{"$event_id", "$$eventID"}},
+						bson.M{"$eq": bson.A{"$tenant_id", "$$tenantID"}},
+					}},
+				}}},
+			},
+			"as": "matching_deliveries",
 		}}},
 		bson.D{{Key: "$match", Value: bson.M{
 			"matching_deliveries": bson.M{"$size": 0},
@@ -51,6 +60,7 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 		bson.D{{Key: "$project", Value: bson.M{
 			"source":     1,
 			"event_type": 1,
+			"tenant_id":  1,
 		}}},
 	}
 
@@ -78,6 +88,7 @@ func (s *Store) FindOrphanedEvents(ctx context.Context, threshold time.Time) ([]
 func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) ([]EventRecord, error) {
 	pipeline := mongo.Pipeline{
 		bson.D{{Key: "$match", Value: bson.M{
+			"tenant_id": bson.M{"$exists": true, "$ne": ""},
 			"$or": bson.A{
 				bson.M{"fanout_status": "incomplete"},
 				bson.M{
@@ -89,6 +100,7 @@ func (s *Store) FindIncompleteFanout(ctx context.Context, threshold time.Time) (
 		bson.D{{Key: "$project", Value: bson.M{
 			"source":     1,
 			"event_type": 1,
+			"tenant_id":  1,
 		}}},
 	}
 
@@ -157,7 +169,7 @@ func (s *Store) ResetExpiredLeases(ctx context.Context, now time.Time) (int64, e
 func (s *Store) FindStaleParentStates(
 	ctx context.Context,
 	now time.Time,
-) ([]bson.ObjectID, error) {
+) ([]EventRecord, error) {
 	cutoff := now.Add(-1 * time.Minute)
 
 	pipeline := mongo.Pipeline{
@@ -165,12 +177,20 @@ func (s *Store) FindStaleParentStates(
 			"received_at":     bson.M{"$lt": cutoff},
 			"delivery_status": bson.M{"$nin": []string{"disabled", "no_destination"}},
 			"fanout_status":   "completed",
+			"tenant_id":       bson.M{"$exists": true, "$ne": ""},
 		}}},
 		bson.D{{Key: "$lookup", Value: bson.M{
-			"from":         "deliveries",
-			"localField":   "_id",
-			"foreignField": "event_id",
-			"as":           "children",
+			"from": "deliveries",
+			"let":  bson.M{"eventID": "$_id", "tenantID": "$tenant_id"},
+			"pipeline": mongo.Pipeline{
+				bson.D{{Key: "$match", Value: bson.M{
+					"$expr": bson.M{"$and": bson.A{
+						bson.M{"$eq": bson.A{"$event_id", "$$eventID"}},
+						bson.M{"$eq": bson.A{"$tenant_id", "$$tenantID"}},
+					}},
+				}}},
+			},
+			"as": "children",
 		}}},
 		bson.D{{Key: "$addFields", Value: bson.M{
 			"delivered": bson.M{"$size": bson.M{"$filter": bson.M{
@@ -211,7 +231,7 @@ func (s *Store) FindStaleParentStates(
 				}},
 			}},
 		}}},
-		bson.D{{Key: "$project", Value: bson.M{"_id": 1}}},
+		bson.D{{Key: "$project", Value: bson.M{"_id": 1, "tenant_id": 1}}},
 	}
 
 	cursor, err := s.eventsCol.Aggregate(ctx, pipeline)
@@ -224,19 +244,17 @@ func (s *Store) FindStaleParentStates(
 		}
 	}()
 
-	var ids []bson.ObjectID
+	var records []EventRecord
 	for cursor.Next(ctx) {
-		var row struct {
-			ID bson.ObjectID `bson:"_id"`
-		}
+		var row EventRecord
 		if err := cursor.Decode(&row); err != nil {
 			return nil, fmt.Errorf("decode stale parent: %w", err)
 		}
-		ids = append(ids, row.ID)
+		records = append(records, row)
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("iterate stale parent states: %w", err)
 	}
 
-	return ids, nil
+	return records, nil
 }

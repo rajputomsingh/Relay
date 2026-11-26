@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -21,6 +22,7 @@ const maxEventBody = 1 << 20
 type FanoutService interface {
 	CreateDeliveries(
 		ctx context.Context,
+		tid tenant.TenantID,
 		eventID bson.ObjectID,
 		source string,
 		eventType string,
@@ -174,6 +176,14 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	tid, ok := tenant.FromContext(r.Context())
+	if !ok {
+		writeEventJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "tenant context missing",
+		})
+		return
+	}
+
 	deliveryStatus := "disabled"
 	if h.fanout != nil {
 		deliveryStatus = "managed"
@@ -182,6 +192,7 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 
 	doc := bson.M{
+		"tenant_id":         string(tid),
 		"source":            req.Source,
 		"event_type":        req.EventType,
 		"data":              req.Data,
@@ -219,6 +230,7 @@ func (h *EventsHandler) create(w http.ResponseWriter, r *http.Request) {
 	if h.fanout != nil {
 		if err := h.fanout.CreateDeliveries(
 			ctx,
+			tid,
 			eventID,
 			req.Source,
 			req.EventType,

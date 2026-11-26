@@ -56,6 +56,7 @@ func TestWorkerCrashBeforeDBWriteResultsInDuplicateDelivery(t *testing.T) {
 		ctx,
 		bson.M{"_id": deliveryID},
 		bson.M{"$set": bson.M{
+			"tenant_id":   string(workerIntegrationTenant),
 			"status":      StatusProcessing,
 			"attempts":    1,
 			"lease_until": time.Now().UTC().Add(-time.Minute),
@@ -142,6 +143,7 @@ func TestWorkerCrashAfterHTTPResponseBeforeDBWritePreservesRecoverability(t *tes
 		ctx,
 		bson.M{"_id": deliveryID},
 		bson.M{"$set": bson.M{
+			"tenant_id":   string(workerIntegrationTenant),
 			"status":      StatusProcessing,
 			"attempts":    1,
 			"lease_until": time.Now().UTC().Add(-30 * time.Second),

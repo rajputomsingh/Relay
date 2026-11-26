@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -37,19 +37,10 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auth := r.Header.Get("Authorization")
-	providedKey := ""
-	if strings.HasPrefix(auth, "Bearer ") {
-		providedKey = strings.TrimPrefix(auth, "Bearer ")
-	}
-
-	if providedKey == "" ||
-		subtle.ConstantTimeCompare(
-			[]byte(providedKey),
-			[]byte(h.apiKey),
-		) != 1 {
+	tid, ok := tenant.FromContext(r.Context())
+	if !ok {
 		writeEventJSON(w, http.StatusUnauthorized, map[string]any{
-			"error": "invalid or missing API key",
+			"error": "tenant context missing",
 		})
 		return
 	}
@@ -101,6 +92,7 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 		ctx,
 		bson.M{
 			"_id":             objectID,
+			"tenant_id":       string(tid),
 			"delivery_status": lifecycle.StatusFailed,
 			"$or": []bson.M{
 				{"replay_in_flight": bson.M{"$exists": false}},
@@ -167,8 +159,9 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 	result, err := h.deliveries.UpdateMany(
 		ctx,
 		bson.M{
-			"event_id": objectID,
-			"status":   "failed",
+			"event_id":  objectID,
+			"tenant_id": string(tid),
+			"status":    "failed",
 		},
 		bson.M{
 			"$set": bson.M{
@@ -206,7 +199,7 @@ func (h *EventsHandler) replay(w http.ResponseWriter, r *http.Request) {
 	// Step 3: aggregator recomputes parent state from child deliveries.
 	// Best-effort: failure here does not fail replay; the reconciler
 	// repairs stale parents on its next pass.
-	_ = h.aggregator.AggregateEvent(ctx, objectID)
+	_ = h.aggregator.AggregateEvent(ctx, tid, objectID)
 
 	// Release the claim now that the requeue and aggregation are done.
 	releaseClaim()

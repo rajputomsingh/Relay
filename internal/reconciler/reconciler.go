@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -41,7 +42,7 @@ var (
 
 // EventFanouter is the interface the reconciler uses to re-trigger fan-out.
 type EventFanouter interface {
-	FanOutEvent(ctx context.Context, eventID bson.ObjectID, source, eventType string) error
+	FanOutEvent(ctx context.Context, tid tenant.TenantID, eventID bson.ObjectID, source, eventType string) error
 }
 
 // Config holds the tunable parameters for the reconciler.
@@ -132,7 +133,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	} else if len(incompleteFanouts) > 0 {
 		r.logger.Info("found incomplete fanout events, re-triggering fan-out", "count", len(incompleteFanouts))
 		for _, evt := range incompleteFanouts {
-			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
+			if err := r.fanouter.FanOutEvent(ctx, tenant.TenantID(evt.TenantID), evt.ID, evt.Source, evt.EventType); err != nil {
 				r.logger.Error("failed to re-fan-out incomplete event", "event_id", evt.ID.Hex(), "error", err)
 			} else {
 				fanoutRecovered.Inc()
@@ -148,7 +149,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	} else if len(orphanedEvents) > 0 {
 		r.logger.Info("found orphaned events, triggering fan-out", "count", len(orphanedEvents))
 		for _, evt := range orphanedEvents {
-			if err := r.fanouter.FanOutEvent(ctx, evt.ID, evt.Source, evt.EventType); err != nil {
+			if err := r.fanouter.FanOutEvent(ctx, tenant.TenantID(evt.TenantID), evt.ID, evt.Source, evt.EventType); err != nil {
 				r.logger.Error("failed to fan-out orphaned event", "event_id", evt.ID.Hex(), "error", err)
 			} else {
 				eventsHealed.Inc()
@@ -182,10 +183,15 @@ func (r *Reconciler) repairStaleParents(
 	}
 
 	repaired := 0
-	for _, eventID := range candidates {
-		if err := r.aggregator.AggregateEvent(ctx, eventID); err != nil {
+	for _, evt := range candidates {
+		if evt.TenantID == "" {
+			r.logger.Error("cannot repair event without tenant",
+				"event_id", evt.ID.Hex())
+			continue
+		}
+		if err := r.aggregator.AggregateEvent(ctx, tenant.TenantID(evt.TenantID), evt.ID); err != nil {
 			r.logger.Error("aggregation failed during stale-parent repair",
-				"event_id", eventID.Hex(), "error_type", err)
+				"event_id", evt.ID.Hex(), "error_type", err)
 			continue
 		}
 		repaired++

@@ -18,6 +18,7 @@ import (
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"github.com/rajputomsingh/relay/internal/security"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -59,6 +60,7 @@ type claimResult struct {
 
 type eventRecord struct {
 	ID             bson.ObjectID  `bson:"_id"`
+	TenantID       string         `bson:"tenant_id"`
 	Source         string         `bson:"source"`
 	EventType      string         `bson:"event_type"`
 	Data           map[string]any `bson:"data"`
@@ -197,13 +199,13 @@ func (w *Worker) InFlightDeliveries() int {
 }
 
 // aggregate is a best-effort wrapper around the lifecycle aggregator.
-func (w *Worker) aggregate(ctx context.Context, eventID bson.ObjectID) {
+func (w *Worker) aggregate(ctx context.Context, tid tenant.TenantID, eventID bson.ObjectID) {
 	if w.aggregator == nil {
 		return
 	}
 	aggregateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := w.aggregator.AggregateEvent(aggregateCtx, eventID); err != nil {
+	if err := w.aggregator.AggregateEvent(aggregateCtx, tid, eventID); err != nil {
 		w.logger.Error(
 			"lifecycle aggregation failed",
 			"event_id", eventID.Hex(),
@@ -262,7 +264,14 @@ func (w *Worker) claim(ctx context.Context) (claimResult, error) {
 	}
 
 	var event eventRecord
-	err = w.events.FindOne(ctx, bson.M{"_id": delivery.EventID}).Decode(&event)
+	if delivery.TenantID == "" {
+		return claimResult{}, errors.New("worker: claimed delivery has no tenant ID")
+	}
+
+	err = w.events.FindOne(
+		ctx,
+		bson.M{"_id": delivery.EventID, "tenant_id": delivery.TenantID},
+	).Decode(&event)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		if terr := w.recordTerminalFailure(ctx, delivery, "event not found"); terr != nil {
 			w.logger.Error("failed to mark delivery as failed for missing event", "delivery_id", delivery.ID.Hex(), "error_type", fmt.Sprintf("%T", terr))
@@ -274,12 +283,22 @@ func (w *Worker) claim(ctx context.Context) (claimResult, error) {
 	}
 
 	var ep endpoints.Endpoint
-	err = w.endpoints.FindOne(ctx, bson.M{"_id": delivery.EndpointID}).Decode(&ep)
+	err = w.endpoints.FindOne(
+		ctx,
+		bson.M{"_id": delivery.EndpointID, "tenant_id": delivery.TenantID},
+	).Decode(&ep)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		if terr := w.recordTerminalFailure(ctx, delivery, "endpoint not found"); terr != nil {
 			w.logger.Error("failed to mark delivery as failed for missing endpoint", "delivery_id", delivery.ID.Hex(), "error_type", fmt.Sprintf("%T", terr))
 		}
 		return claimResult{}, mongo.ErrNoDocuments
+	}
+
+	if event.TenantID != delivery.TenantID {
+		return claimResult{}, errors.New("worker: event tenant mismatch")
+	}
+	if ep.TenantID != delivery.TenantID {
+		return claimResult{}, errors.New("worker: endpoint tenant mismatch")
 	}
 	if err != nil {
 		return claimResult{}, fmt.Errorf("load endpoint: %w", err)
@@ -305,22 +324,31 @@ func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 			"lease_until": bson.M{"$lte": now},
 			"$expr":       bson.M{"$gte": bson.A{"$attempts", "$max_attempts"}},
 		},
-		options.Find().SetProjection(bson.M{"_id": 1, "event_id": 1}),
+		options.Find().SetProjection(bson.M{"_id": 1, "event_id": 1, "tenant_id": 1}),
 	)
 	if err != nil {
 		return fmt.Errorf("list exhausted deliveries: %w", err)
 	}
 
-	affectedEvents := make(map[bson.ObjectID]struct{})
+	type affectedEvent struct {
+		TenantID string
+		EventID  bson.ObjectID
+	}
+	affectedEvents := make(map[affectedEvent]struct{})
 	for cursor.Next(ctx) {
 		var row struct {
-			EventID bson.ObjectID `bson:"event_id"`
+			EventID  bson.ObjectID `bson:"event_id"`
+			TenantID string        `bson:"tenant_id"`
 		}
 		if err := cursor.Decode(&row); err != nil {
 			_ = cursor.Close(ctx)
 			return fmt.Errorf("decode exhausted delivery: %w", err)
 		}
-		affectedEvents[row.EventID] = struct{}{}
+		if row.TenantID == "" {
+			_ = cursor.Close(ctx)
+			return errors.New("worker: exhausted delivery has no tenant ID")
+		}
+		affectedEvents[affectedEvent{TenantID: row.TenantID, EventID: row.EventID}] = struct{}{}
 	}
 	if err := cursor.Err(); err != nil {
 		_ = cursor.Close(ctx)
@@ -359,8 +387,8 @@ func (w *Worker) failExhaustedLeases(ctx context.Context) error {
 
 	if result.ModifiedCount > 0 {
 		w.logger.Warn("expired delivery leases exhausted", "count", result.ModifiedCount)
-		for eventID := range affectedEvents {
-			w.aggregate(ctx, eventID)
+		for evt := range affectedEvents {
+			w.aggregate(ctx, tenant.TenantID(evt.TenantID), evt.EventID)
 		}
 	}
 
@@ -403,6 +431,7 @@ func (w *Worker) processOne(ctx context.Context) error {
 		durationMS := finishedAt.Sub(startedAt).Milliseconds()
 
 		attempt := Attempt{
+			TenantID:      delivery.TenantID,
 			EventID:       event.ID,
 			EndpointID:    endpoint.ID,
 			AttemptNumber: delivery.Attempts + 1,
@@ -417,9 +446,16 @@ func (w *Worker) processOne(ctx context.Context) error {
 			attempt.Error = attemptErr.Error()
 		}
 
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, saveErr := w.attempts.InsertOne(saveCtx, attempt)
-		cancel()
+		var saveErr error
+		if attempt.TenantID == "" {
+			saveErr = errors.New("worker: delivery has no tenant")
+			w.logger.Error("refusing to write attempt without tenant",
+				"delivery_id", delivery.ID.Hex())
+		} else {
+			saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, saveErr = w.attempts.InsertOne(saveCtx, attempt)
+			cancel()
+		}
 
 		if saveErr != nil {
 			w.logger.Error("delivery attempt history write failed",
@@ -529,7 +565,7 @@ func (w *Worker) releaseClaim(ctx context.Context, delivery Delivery) error {
 
 	result, err := w.deliveries.UpdateOne(
 		ctx,
-		bson.M{"_id": delivery.ID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
+		bson.M{"_id": delivery.ID, "tenant_id": delivery.TenantID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
 		bson.M{
 			"$set":   bson.M{"status": StatusPending, "updated_at": now},
 			"$unset": bson.M{"lease_until": "", "lease_token": ""},
@@ -547,7 +583,7 @@ func (w *Worker) recordSuccess(ctx context.Context, delivery Delivery) error {
 
 	result, err := w.deliveries.UpdateOne(
 		ctx,
-		bson.M{"_id": delivery.ID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
+		bson.M{"_id": delivery.ID, "tenant_id": delivery.TenantID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
 		bson.M{
 			"$set": bson.M{
 				"status":       StatusDelivered,
@@ -569,7 +605,7 @@ func (w *Worker) recordSuccess(ctx context.Context, delivery Delivery) error {
 		return errors.New("mark delivery delivered: no longer owned by this lease")
 	}
 
-	w.aggregate(ctx, delivery.EventID)
+	w.aggregate(ctx, tenant.TenantID(delivery.TenantID), delivery.EventID)
 	return nil
 }
 
@@ -601,7 +637,7 @@ func (w *Worker) recordFailure(ctx context.Context, delivery Delivery, message s
 
 	result, err := w.deliveries.UpdateOne(
 		ctx,
-		bson.M{"_id": delivery.ID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
+		bson.M{"_id": delivery.ID, "tenant_id": delivery.TenantID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
 		bson.M{"$set": set, "$unset": unset},
 	)
 	if err != nil {
@@ -612,7 +648,7 @@ func (w *Worker) recordFailure(ctx context.Context, delivery Delivery, message s
 	}
 
 	if terminal {
-		w.aggregate(ctx, delivery.EventID)
+		w.aggregate(ctx, tenant.TenantID(delivery.TenantID), delivery.EventID)
 	}
 	return nil
 }
@@ -622,7 +658,7 @@ func (w *Worker) recordTerminalFailure(ctx context.Context, delivery Delivery, m
 
 	result, err := w.deliveries.UpdateOne(
 		ctx,
-		bson.M{"_id": delivery.ID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
+		bson.M{"_id": delivery.ID, "tenant_id": delivery.TenantID, "status": StatusProcessing, "lease_token": delivery.LeaseToken},
 		bson.M{
 			"$set": bson.M{
 				"status":     StatusFailed,
@@ -644,7 +680,7 @@ func (w *Worker) recordTerminalFailure(ctx context.Context, delivery Delivery, m
 		return errors.New("record terminal delivery failure: no longer owned by this lease")
 	}
 
-	w.aggregate(ctx, delivery.EventID)
+	w.aggregate(ctx, tenant.TenantID(delivery.TenantID), delivery.EventID)
 	return nil
 }
 
