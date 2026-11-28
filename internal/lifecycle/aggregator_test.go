@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+const aggregatorTestTenant = tenant.TenantID("aggregator-test-tenant")
 
 func newAggregatorTestDB(t *testing.T, dbName string) *mongo.Database {
 	t.Helper()
@@ -56,6 +59,7 @@ func seedEvent(
 	id := bson.NewObjectID()
 	doc := bson.M{
 		"_id":                   id,
+		"tenant_id":             string(aggregatorTestTenant),
 		"source":                "test",
 		"event_type":            "test.created",
 		"received_at":           time.Now().UTC(),
@@ -82,6 +86,7 @@ func seedDelivery(
 	id := bson.NewObjectID()
 	doc := bson.M{
 		"_id":          id,
+		"tenant_id":    string(aggregatorTestTenant),
 		"event_id":     eventID,
 		"endpoint_id":  bson.NewObjectID(),
 		"status":       status,
@@ -121,7 +126,7 @@ func TestAggregateNoDestination(t *testing.T) {
 	eventID := seedEvent(t, events, 0)
 
 	agg := NewAggregator(events, deliveries)
-	if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+	if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 		t.Fatalf("AggregateEvent: %v", err)
 	}
 
@@ -140,7 +145,7 @@ func TestAggregateAllDelivered(t *testing.T) {
 	seedDelivery(t, deliveries, eventID, "delivered")
 
 	agg := NewAggregator(events, deliveries)
-	if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+	if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 		t.Fatalf("AggregateEvent: %v", err)
 	}
 
@@ -159,7 +164,7 @@ func TestAggregateAllFailed(t *testing.T) {
 	seedDelivery(t, deliveries, eventID, "failed")
 
 	agg := NewAggregator(events, deliveries)
-	if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+	if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 		t.Fatalf("AggregateEvent: %v", err)
 	}
 
@@ -179,7 +184,7 @@ func TestAggregateMixedOutcomeIsFailed(t *testing.T) {
 	seedDelivery(t, deliveries, eventID, "failed")
 
 	agg := NewAggregator(events, deliveries)
-	if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+	if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 		t.Fatalf("AggregateEvent: %v", err)
 	}
 
@@ -228,7 +233,7 @@ func TestAggregatePendingAndProcessing(t *testing.T) {
 			}
 
 			agg := NewAggregator(events, deliveries)
-			if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+			if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 				t.Fatalf("AggregateEvent: %v", err)
 			}
 			if got := readEventStatus(t, events, eventID); got != tc.want {
@@ -250,7 +255,7 @@ func TestAggregateIdempotent(t *testing.T) {
 	agg := NewAggregator(events, deliveries)
 
 	for i := 0; i < 3; i++ {
-		if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+		if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
 		}
 	}
@@ -268,6 +273,7 @@ func TestAggregateRespectsDisabled(t *testing.T) {
 	eventID := bson.NewObjectID()
 	if _, err := events.InsertOne(context.Background(), bson.M{
 		"_id":             eventID,
+		"tenant_id":       string(aggregatorTestTenant),
 		"source":          "test",
 		"event_type":      "test.created",
 		"received_at":     time.Now().UTC(),
@@ -278,7 +284,7 @@ func TestAggregateRespectsDisabled(t *testing.T) {
 	}
 
 	agg := NewAggregator(events, deliveries)
-	if err := agg.AggregateEvent(context.Background(), eventID); err != nil {
+	if err := agg.AggregateEvent(context.Background(), aggregatorTestTenant, eventID); err != nil {
 		t.Fatalf("AggregateEvent: %v", err)
 	}
 

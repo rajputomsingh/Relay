@@ -9,8 +9,11 @@ import (
 
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+const lifecycleTestTenant = "test-tenant"
 
 // runWorkerOnce starts the worker in a goroutine and stops it after
 // giving it enough time to complete one delivery cycle. Since the test
@@ -60,6 +63,8 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 	deliveries := db.Collection("deliveries")
 	attempts := db.Collection("delivery_attempts")
 
+	tid := tenant.TenantID(lifecycleTestTenant)
+
 	// Receiver that fails the first call, then succeeds on subsequent
 	// calls. This triggers replay.
 	callsToFail := 1
@@ -79,6 +84,7 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 	endpointID := bson.NewObjectID()
 	if _, err := endpointColl.InsertOne(ctx, bson.M{
 		"_id":          endpointID,
+		"tenant_id":    string(tid),
 		"name":         "e2e-" + endpointID.Hex(),
 		"url":          server.URL,
 		"enabled":      true,
@@ -94,6 +100,7 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 	eventID := bson.NewObjectID()
 	if _, err := events.InsertOne(ctx, bson.M{
 		"_id":             eventID,
+		"tenant_id":       string(tid),
 		"source":          "e2e",
 		"event_type":      "e2e.test",
 		"data":            bson.M{"k": "v"},
@@ -106,7 +113,7 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 	}
 
 	fanout := delivery.NewFanout(events, endpointColl, deliveries, aggregator, nil)
-	if err := fanout.CreateDeliveries(ctx, eventID, "e2e", "e2e.test"); err != nil {
+	if err := fanout.CreateDeliveries(ctx, tid, eventID, "e2e", "e2e.test"); err != nil {
 		t.Fatalf("fan-out: %v", err)
 	}
 
@@ -158,6 +165,7 @@ func TestLifecycleInvariantEndToEnd(t *testing.T) {
 		nil,
 	)
 	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	req = req.WithContext(tenant.WithTenant(req.Context(), tid))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 

@@ -10,19 +10,16 @@ import (
 
 	relay "github.com/rajputomsingh/relay/sdk-go"
 
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/handlers"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// TestSDKAgainstRealHandlers runs the SDK against the real Relay handlers
-// backed by a real MongoDB, with no mocks. This is the test that proves
-// the SDK's request and response shapes match the server's actual contract.
-//
-// Requires MONGODB_TEST_URI. Skips otherwise.
 func TestSDKAgainstRealHandlers(t *testing.T) {
 	uri := os.Getenv("MONGODB_TEST_URI")
 	if uri == "" {
@@ -56,8 +53,9 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 
 	aggregator := lifecycle.NewAggregator(events, deliveries)
 
-	// Build a minimal Relay server with the real handlers.
 	apiKey := "test-sdk-api-key-with-at-least-32-chars"
+	testTenantID := tenant.TenantID("test-sdk-tenant")
+
 	fanout := delivery.NewFanout(events, endpointsCol, deliveries, aggregator, nil)
 
 	eventsHandler := handlers.NewEventsHandler(
@@ -67,7 +65,7 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 		events, attempts, deliveries, apiKey,
 	)
 	endpointsHandler := handlers.NewEndpointsHandler(
-		endpoints.NewStore(endpointsCol), apiKey,
+		endpoints.NewStore(endpointsCol),
 	)
 	eventsListHandler := handlers.NewEventsListHandler(events, apiKey)
 
@@ -76,13 +74,17 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 	eventsListHandler.Register(mux)
 	inspectionHandler.Register(mux)
 	endpointsHandler.Register(mux)
-	srv := httptest.NewServer(mux)
+
+	wrapped := auth.Middleware(
+		auth.LegacyResolver{Key: apiKey, Tenant: testTenantID},
+		nil,
+	)(mux)
+
+	srv := httptest.NewServer(wrapped)
 	defer srv.Close()
 
-	// SDK client pointed at the real server.
 	sdk := relay.NewClient(apiKey, relay.WithBaseURL(srv.URL))
 
-	// Endpoint creation exercises the SSRF guard, validation, and response shape.
 	ep, err := sdk.CreateEndpoint(ctx, relay.CreateEndpointParams{
 		Name:        "sdk-test",
 		URL:         "https://example.com/hook",
@@ -95,7 +97,6 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 		t.Fatalf("CreateEndpoint response malformed: %+v", ep)
 	}
 
-	// Event submission exercises ingestion, fan-out, and the aggregator.
 	resp, err := sdk.SendEvent(ctx, relay.Event{
 		Source:    "sdk-test",
 		EventType: "test.created",
@@ -111,18 +112,14 @@ func TestSDKAgainstRealHandlers(t *testing.T) {
 		t.Fatal("SendEvent EventID is empty on first submission")
 	}
 
-	// Inspect: verify parent status reflects the child deliveries.
 	evt, err := sdk.InspectEvent(ctx, resp.EventID)
 	if err != nil {
 		t.Fatalf("InspectEvent: %v", err)
 	}
 	if evt.DeliveryStatus == "" || evt.DeliveryStatus == "managed" {
-		// Aggregator should have moved the parent out of "managed" by now.
-		// It may still be "processing" or "pending" depending on worker state.
 		t.Logf("event status after send: %q (acceptable)", evt.DeliveryStatus)
 	}
 
-	// List events: verify SDK serializes and decodes correctly.
 	listResp, err := sdk.ListEvents(ctx, relay.ListEventsParams{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)

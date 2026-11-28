@@ -12,6 +12,7 @@ import (
 
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -91,6 +92,7 @@ func newReplayFixture(
 	endpointID := bson.NewObjectID()
 	if _, err := endpointColl.InsertOne(ctx, bson.M{
 		"_id":          endpointID,
+		"tenant_id":    testTenantID,
 		"name":         "replay-" + endpointID.Hex(),
 		"url":          srv.URL,
 		"enabled":      true,
@@ -104,6 +106,7 @@ func newReplayFixture(
 	eventID := bson.NewObjectID()
 	if _, err := events.InsertOne(ctx, bson.M{
 		"_id":                   eventID,
+		"tenant_id":             testTenantID,
 		"source":                "replay-test",
 		"event_type":            "test.replay",
 		"data":                  bson.M{"test": true},
@@ -123,6 +126,7 @@ func newReplayFixture(
 		epID := bson.NewObjectID()
 		if _, err := endpointColl.InsertOne(ctx, bson.M{
 			"_id":          epID,
+			"tenant_id":    testTenantID,
 			"name":         "delivered-" + epID.Hex(),
 			"url":          srv.URL,
 			"enabled":      true,
@@ -134,6 +138,7 @@ func newReplayFixture(
 		}
 		if _, err := deliveries.InsertOne(ctx, bson.M{
 			"_id":          bson.NewObjectID(),
+			"tenant_id":    testTenantID,
 			"event_id":     eventID,
 			"endpoint_id":  epID,
 			"status":       "delivered",
@@ -150,6 +155,7 @@ func newReplayFixture(
 	for i := 0; i < failedCount; i++ {
 		if _, err := deliveries.InsertOne(ctx, bson.M{
 			"_id":          bson.NewObjectID(),
+			"tenant_id":    testTenantID,
 			"event_id":     eventID,
 			"endpoint_id":  endpointID,
 			"status":       "failed",
@@ -199,6 +205,7 @@ func (f *replayFixture) serveReplay(t *testing.T) *httptest.ResponseRecorder {
 		nil,
 	)
 	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+	req = req.WithContext(tenant.WithTenant(req.Context(), tenant.TenantID(testTenantID)))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec

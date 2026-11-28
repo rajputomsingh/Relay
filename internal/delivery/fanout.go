@@ -9,6 +9,7 @@ import (
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -60,13 +61,17 @@ const (
 // parent states.
 func (f *Fanout) CreateDeliveries(
 	ctx context.Context,
+	tid tenant.TenantID,
 	eventID bson.ObjectID,
 	source string,
 	eventType string,
 ) error {
+	if tid == "" {
+		return errors.New("fanout: tenant ID is required")
+	}
 	cursor, err := f.endpoints.Find(
 		ctx,
-		bson.M{"enabled": true},
+		bson.M{"enabled": true, "tenant_id": string(tid)},
 		options.Find().SetProjection(bson.M{
 			"_id":          1,
 			"event_filter": 1,
@@ -100,6 +105,7 @@ func (f *Fanout) CreateDeliveries(
 		matched++
 
 		delivery := Delivery{
+			TenantID:      string(tid),
 			EventID:       eventID,
 			EndpointID:    ep.ID,
 			Status:        StatusPending,
@@ -110,9 +116,14 @@ func (f *Fanout) CreateDeliveries(
 			UpdatedAt:     now,
 		}
 
-		filter := bson.M{"event_id": eventID, "endpoint_id": ep.ID}
+		filter := bson.M{
+			"tenant_id":   delivery.TenantID,
+			"event_id":    eventID,
+			"endpoint_id": ep.ID,
+		}
 		update := bson.M{
 			"$setOnInsert": bson.M{
+				"tenant_id":    delivery.TenantID,
 				"status":       delivery.Status,
 				"attempts":     delivery.Attempts,
 				"max_attempts": delivery.MaxAttempts,
@@ -165,7 +176,7 @@ func (f *Fanout) CreateDeliveries(
 	// Invoke the lifecycle aggregator so parent status reflects fan-out outcome.
 	if f.aggregator != nil {
 		aggregateCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := f.aggregator.AggregateEvent(aggregateCtx, eventID); err != nil {
+		if err := f.aggregator.AggregateEvent(aggregateCtx, tid, eventID); err != nil {
 			f.logger.Error(
 				"lifecycle aggregation failed after fanout",
 				"event_id", eventID.Hex(),

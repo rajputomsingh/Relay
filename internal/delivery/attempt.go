@@ -15,6 +15,7 @@ import (
 // from post-replay attempts on the same (event_id, endpoint_id) pair.
 type Attempt struct {
 	ID            bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	TenantID      string        `bson:"tenant_id,omitempty" json:"-"`
 	EventID       bson.ObjectID `bson:"event_id" json:"event_id"`
 	EndpointID    bson.ObjectID `bson:"endpoint_id,omitempty" json:"endpoint_id,omitempty"`
 	AttemptNumber int           `bson:"attempt_number" json:"attempt_number"`

@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -17,15 +19,18 @@ type fakeEndpointHealthStore struct {
 	health endpointHealth
 	err    error
 
-	gotID  bson.ObjectID
-	gotNow time.Time
+	gotTenantID string
+	gotID       bson.ObjectID
+	gotNow      time.Time
 }
 
 func (f *fakeEndpointHealthStore) Health(
 	_ context.Context,
+	tenantID string,
 	id bson.ObjectID,
 	now time.Time,
 ) (endpointHealth, error) {
+	f.gotTenantID = tenantID
 	f.gotID = id
 	f.gotNow = now
 	if f.err != nil {
@@ -38,16 +43,18 @@ func newEndpointHealthTestMux(
 	epStore endpointsStore,
 	healthStore endpointHealthStore,
 	now func() time.Time,
-) *http.ServeMux {
+) http.Handler {
 	mux := http.NewServeMux()
 	h := &EndpointHealthHandler{
 		endpoints: epStore,
 		health:    healthStore,
-		apiKey:    testAPIKey,
 		now:       now,
 	}
 	h.Register(mux)
-	return mux
+	return auth.Middleware(
+		auth.LegacyResolver{Key: testAPIKey, Tenant: tenant.TenantID(testTenantID)},
+		nil,
+	)(mux)
 }
 
 func TestEndpointHealthUnauthorized(t *testing.T) {
@@ -60,12 +67,8 @@ func TestEndpointHealthUnauthorized(t *testing.T) {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if body["error"] != "unauthorized" {
-		t.Fatalf("unexpected error body: %v", body)
+	if !strings.Contains(rec.Body.String(), "unauthorized") {
+		t.Fatalf("expected body to contain 'unauthorized', got: %s", rec.Body.String())
 	}
 }
 
@@ -212,6 +215,9 @@ func TestEndpointHealthMixedOutcomes(t *testing.T) {
 
 	if healthStore.gotID != id {
 		t.Fatalf("store received id %v, want %v", healthStore.gotID, id)
+	}
+	if healthStore.gotTenantID != testTenantID {
+		t.Fatalf("store received tenant %q, want %q", healthStore.gotTenantID, testTenantID)
 	}
 	if !healthStore.gotNow.Equal(now) {
 		t.Fatalf("store received now %v, want %v", healthStore.gotNow, now)

@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rajputomsingh/relay/internal/delivery"
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -19,10 +20,18 @@ func TestEndpointHealthIntegrationLatencies(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	cutoff := now.Add(-time.Hour)
 	epStore := endpoints.NewStore(db.Collection("endpoints"))
-	handler := NewEndpointHealthHandler(epStore, db.Collection("deliveries"), db.Collection("delivery_attempts"), testAPIKey)
+	handler := NewEndpointHealthHandler(
+		epStore,
+		db.Collection("deliveries"),
+		db.Collection("delivery_attempts"),
+	)
 	handler.now = func() time.Time { return now }
 	mux := http.NewServeMux()
 	handler.Register(mux)
+	wrapped := auth.Middleware(
+		auth.LegacyResolver{Key: testAPIKey, Tenant: tenant.TenantID(testTenantID)},
+		nil,
+	)(mux)
 
 	distribution := make([]int64, 100)
 	for i := range distribution {
@@ -50,7 +59,12 @@ func TestEndpointHealthIntegrationLatencies(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ep, err := epStore.Create(ctx, endpoints.Endpoint{Name: tt.name, URL: "https://example.com/webhook", MaxAttempts: 3})
+			ep, err := epStore.Create(ctx, endpoints.Endpoint{
+				TenantID:    testTenantID,
+				Name:        tt.name,
+				URL:         "https://example.com/webhook",
+				MaxAttempts: 3,
+			})
 			if err != nil {
 				t.Fatalf("create endpoint: %v", err)
 			}
@@ -58,12 +72,16 @@ func TestEndpointHealthIntegrationLatencies(t *testing.T) {
 			if tt.atCutoff {
 				started = cutoff
 			}
-			attempt := func(endpointID bson.ObjectID, at time.Time, latency int64, outcome string) delivery.Attempt {
-				return delivery.Attempt{
-					EventID: bson.NewObjectID(), EndpointID: endpointID, AttemptNumber: 1,
-					StartedAt: at, FinishedAt: at.Add(time.Duration(latency) * time.Millisecond),
-					// Deliberately inconsistent: the API contract uses timestamps.
-					DurationMS: 999999, Outcome: outcome,
+			attempt := func(endpointID bson.ObjectID, at time.Time, latency int64, outcome string) bson.M {
+				return bson.M{
+					"tenant_id":      testTenantID,
+					"event_id":       bson.NewObjectID(),
+					"endpoint_id":    endpointID,
+					"attempt_number": 1,
+					"started_at":     at,
+					"finished_at":    at.Add(time.Duration(latency) * time.Millisecond),
+					"duration_ms":    999999,
+					"outcome":        outcome,
 				}
 			}
 			docs := []any{
@@ -81,14 +99,19 @@ func TestEndpointHealthIntegrationLatencies(t *testing.T) {
 			}
 			successes := len(tt.latencies)
 			if tt.missingFinish {
-				docs = append(docs, bson.M{"endpoint_id": ep.ID, "started_at": started, "outcome": attemptOutcomeDelivered})
+				docs = append(docs, bson.M{
+					"tenant_id":   testTenantID,
+					"endpoint_id": ep.ID,
+					"started_at":  started,
+					"outcome":     attemptOutcomeDelivered,
+				})
 				successes++
 			}
 			if _, err := db.Collection("delivery_attempts").InsertMany(ctx, docs); err != nil {
 				t.Fatalf("insert attempts: %v", err)
 			}
 
-			rec := performEndpointRequest(mux, http.MethodGet, "/v1/endpoints/"+ep.ID.Hex()+"/health", "", testAPIKey)
+			rec := performEndpointRequest(wrapped, http.MethodGet, "/v1/endpoints/"+ep.ID.Hex()+"/health", "", testAPIKey)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 			}
@@ -112,8 +135,6 @@ func TestEndpointHealthIntegrationLatencies(t *testing.T) {
 				if err := json.Unmarshal(raw, &got); err != nil || got == nil {
 					t.Fatalf("%s = %s, want a number (decode error: %v)", key, raw, err)
 				}
-				// MongoDB uses approximate percentiles. Allow one sample's spacing
-				// for this known distribution, rather than requiring an exact rank.
 				if math.Abs(*got-tt.want[i]) > tt.tolerance {
 					t.Fatalf("%s = %v, want %v +/- %v", key, *got, tt.want[i], tt.tolerance)
 				}

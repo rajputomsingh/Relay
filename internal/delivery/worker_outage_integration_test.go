@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/lifecycle"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 )
+
+const workerOutageTenant = tenant.TenantID("outage-test-tenant")
 
 func requireDocker(t *testing.T) {
 	t.Helper()
@@ -197,6 +200,7 @@ func TestWorkerRecoversFromMongoOutage(t *testing.T) {
 
 	if _, err := events.InsertOne(seedCtx, bson.M{
 		"_id":             eventID,
+		"tenant_id":       string(workerOutageTenant),
 		"source":          "outage-test",
 		"event_type":      "reliability.test",
 		"data":            bson.M{"k": "v"},
@@ -209,6 +213,7 @@ func TestWorkerRecoversFromMongoOutage(t *testing.T) {
 
 	if _, err := endpoints.InsertOne(seedCtx, bson.M{
 		"_id":          endpointID,
+		"tenant_id":    string(workerOutageTenant),
 		"name":         "outage-test-" + endpointID.Hex(),
 		"url":          server.URL,
 		"enabled":      true,
@@ -221,6 +226,7 @@ func TestWorkerRecoversFromMongoOutage(t *testing.T) {
 
 	if _, err := deliveries.InsertOne(seedCtx, bson.M{
 		"_id":          deliveryID,
+		"tenant_id":    string(workerOutageTenant),
 		"event_id":     eventID,
 		"endpoint_id":  endpointID,
 		"status":       StatusPending,

@@ -20,11 +20,14 @@ import (
 
 	"github.com/rajputomsingh/relay/internal/lifecycle"
 	"github.com/rajputomsingh/relay/internal/security"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 )
+
+const workerIntegrationTenant = tenant.TenantID("worker-test-tenant")
 
 type workerIntegrationDB struct {
 	events     *mongo.Collection
@@ -98,6 +101,7 @@ func insertWorkerIntegrationEvent(
 	now := time.Now().UTC()
 	event := bson.M{
 		"_id":             id,
+		"tenant_id":       string(workerIntegrationTenant),
 		"source":          "integration-test",
 		"event_type":      "invoice.paid",
 		"data":            bson.M{"invoice_id": "inv-worker-test"},
@@ -130,6 +134,7 @@ func insertWorkerIntegrationEndpoint(
 
 	ep := bson.M{
 		"_id":          id,
+		"tenant_id":    string(workerIntegrationTenant),
 		"name":         "test-" + id.Hex(),
 		"url":          url,
 		"enabled":      true,
@@ -166,6 +171,7 @@ func insertWorkerIntegrationEndpointWithRateLimit(
 
 	ep := bson.M{
 		"_id":            id,
+		"tenant_id":      string(workerIntegrationTenant),
 		"name":           "test-" + id.Hex(),
 		"url":            url,
 		"enabled":        true,
@@ -202,6 +208,7 @@ func insertWorkerIntegrationDelivery(
 
 	doc := bson.M{
 		"_id":          id,
+		"tenant_id":    string(workerIntegrationTenant),
 		"event_id":     eventID,
 		"endpoint_id":  endpointID,
 		"status":       StatusPending,

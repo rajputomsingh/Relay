@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -18,25 +17,20 @@ const endpointsTimeout = 5 * time.Second
 
 type endpointsStore interface {
 	Create(context.Context, endpoints.Endpoint) (endpoints.Endpoint, error)
-	List(context.Context) ([]endpoints.Endpoint, error)
-	Get(context.Context, bson.ObjectID) (endpoints.Endpoint, error)
-	Update(context.Context, bson.ObjectID, endpoints.Update) (endpoints.Endpoint, error)
-	Disable(context.Context, bson.ObjectID) (endpoints.Endpoint, error)
+	List(context.Context, string) ([]endpoints.Endpoint, error)
+	Get(context.Context, string, bson.ObjectID) (endpoints.Endpoint, error)
+	Update(context.Context, string, bson.ObjectID, endpoints.Update) (endpoints.Endpoint, error)
+	Disable(context.Context, string, bson.ObjectID) (endpoints.Endpoint, error)
 }
 
 // EndpointsHandler exposes endpoint CRUD over HTTP.
-// TODO(#173): remove the apiKey field once ChainResolver is wired.
-// Keeps legacy RELAY_API_KEY as the single source of truth until
-// Mongo auth lands. Removing this before #173 wires ChainResolver
-// would break dual-auth consistency.
 type EndpointsHandler struct {
-	store  endpointsStore
-	apiKey string
+	store endpointsStore
 }
 
 // NewEndpointsHandler creates an EndpointsHandler.
-func NewEndpointsHandler(store endpointsStore, apiKey string) *EndpointsHandler {
-	return &EndpointsHandler{store: store, apiKey: apiKey}
+func NewEndpointsHandler(store endpointsStore) *EndpointsHandler {
+	return &EndpointsHandler{store: store}
 }
 
 // Register wires the handler into the mux.
@@ -49,7 +43,6 @@ func (h *EndpointsHandler) Register(mux *http.ServeMux) {
 }
 
 // endpointResponse is the safe projection returned to clients.
-// It never contains the signing secret.
 type endpointResponse struct {
 	ID               string                `json:"id"`
 	Name             string                `json:"name"`
@@ -89,28 +82,8 @@ type updateEndpointRequest struct {
 	RateLimitRPS  *int                   `json:"rate_limit_rps"`
 }
 
-// ---------------------------------------------
-// HTTP methods
-// ---------------------------------------------
-
-// create godoc
-// @Summary      Create an endpoint
-// @Description  Registers a new webhook destination. The signing secret cannot be read back after creation.
-// @Tags         endpoints
-// @Accept       json
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Param        endpoint  body  createEndpointRequest  true  "Endpoint configuration"
-// @Success      201  {object}  endpointResponse
-// @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
-// @Failure      409  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /v1/endpoints [post]
 func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(w, r) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	var req createEndpointRequest
 	if !decodeBody(w, r, &req) {
@@ -123,6 +96,7 @@ func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ep := endpoints.Endpoint{
+		TenantID:      string(tid),
 		Name:          req.Name,
 		URL:           req.URL,
 		SigningSecret: req.SigningSecret,
@@ -151,25 +125,13 @@ func (h *EndpointsHandler) create(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusCreated, toEndpointResponse(created))
 }
 
-// list godoc
-// @Summary      List endpoints
-// @Description  Returns all registered endpoints, enabled and disabled.
-// @Tags         endpoints
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Success      200  {object}  endpointListResponse
-// @Failure      401  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /v1/endpoints [get]
 func (h *EndpointsHandler) list(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(w, r) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	ctx, cancel := context.WithTimeout(r.Context(), endpointsTimeout)
 	defer cancel()
 
-	eps, err := h.store.List(ctx)
+	eps, err := h.store.List(ctx, string(tid))
 	if err != nil {
 		writeEndpointStoreError(w, err, "list")
 		return
@@ -186,23 +148,8 @@ func (h *EndpointsHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, resp)
 }
 
-// get godoc
-// @Summary      Get an endpoint
-// @Description  Returns a single endpoint by ID.
-// @Tags         endpoints
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Param        id  path  string  true  "Endpoint ID (MongoDB ObjectID hex)"
-// @Success      200  {object}  endpointResponse
-// @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /v1/endpoints/{id} [get]
 func (h *EndpointsHandler) get(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(w, r) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	id, ok := parseEndpointID(w, r)
 	if !ok {
@@ -212,7 +159,7 @@ func (h *EndpointsHandler) get(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), endpointsTimeout)
 	defer cancel()
 
-	ep, err := h.store.Get(ctx, id)
+	ep, err := h.store.Get(ctx, string(tid), id)
 	if err != nil {
 		writeEndpointStoreError(w, err, "get")
 		return
@@ -221,26 +168,8 @@ func (h *EndpointsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, toEndpointResponse(ep))
 }
 
-// update godoc
-// @Summary      Update an endpoint
-// @Description  Applies a partial update to an endpoint.
-// @Tags         endpoints
-// @Accept       json
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Param        id        path  string                 true  "Endpoint ID (MongoDB ObjectID hex)"
-// @Param        endpoint  body  updateEndpointRequest  true  "Fields to update"
-// @Success      200  {object}  endpointResponse
-// @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      409  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /v1/endpoints/{id} [patch]
 func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(w, r) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	id, ok := parseEndpointID(w, r)
 	if !ok {
@@ -255,7 +184,7 @@ func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), endpointsTimeout)
 	defer cancel()
 
-	updated, err := h.store.Update(ctx, id, endpoints.Update{
+	updated, err := h.store.Update(ctx, string(tid), id, endpoints.Update{
 		Name:          req.Name,
 		URL:           req.URL,
 		SigningSecret: req.SigningSecret,
@@ -272,23 +201,8 @@ func (h *EndpointsHandler) update(w http.ResponseWriter, r *http.Request) {
 	writeEventJSON(w, http.StatusOK, toEndpointResponse(updated))
 }
 
-// delete godoc
-// @Summary      Disable an endpoint
-// @Description  Soft-deletes an endpoint by setting enabled=false. The endpoint is not removed from the database.
-// @Tags         endpoints
-// @Produce      json
-// @Security     ApiKeyAuth
-// @Param        id  path  string  true  "Endpoint ID (MongoDB ObjectID hex)"
-// @Success      200  {object}  map[string]string
-// @Failure      400  {object}  map[string]string
-// @Failure      401  {object}  map[string]string
-// @Failure      404  {object}  map[string]string
-// @Failure      503  {object}  map[string]string
-// @Router       /v1/endpoints/{id} [delete]
 func (h *EndpointsHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(w, r) {
-		return
-	}
+	tid := tenant.MustFromContext(r.Context())
 
 	id, ok := parseEndpointID(w, r)
 	if !ok {
@@ -298,7 +212,7 @@ func (h *EndpointsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), endpointsTimeout)
 	defer cancel()
 
-	if _, err := h.store.Disable(ctx, id); err != nil {
+	if _, err := h.store.Disable(ctx, string(tid), id); err != nil {
 		writeEndpointStoreError(w, err, "disable")
 		return
 	}
@@ -307,33 +221,6 @@ func (h *EndpointsHandler) delete(w http.ResponseWriter, r *http.Request) {
 		"status": "disabled",
 		"id":     id.Hex(),
 	})
-}
-
-// ---------------------------------------------
-// Helpers
-// ---------------------------------------------
-
-func (h *EndpointsHandler) authorized(w http.ResponseWriter, r *http.Request) bool {
-	return authorizeRequest(w, r, h.apiKey)
-}
-
-func authorizeRequest(w http.ResponseWriter, r *http.Request, apiKey string) bool {
-	const prefix = "Bearer "
-	header := r.Header.Get("Authorization")
-
-	if !strings.HasPrefix(header, prefix) ||
-		apiKey == "" ||
-		subtle.ConstantTimeCompare(
-			[]byte(strings.TrimPrefix(header, prefix)),
-			[]byte(apiKey),
-		) != 1 {
-		writeEventJSON(w, http.StatusUnauthorized, map[string]any{
-			"error": "unauthorized",
-		})
-		return false
-	}
-
-	return true
 }
 
 func parseEndpointID(w http.ResponseWriter, r *http.Request) (bson.ObjectID, bool) {
@@ -391,6 +278,10 @@ func writeEndpointStoreError(w http.ResponseWriter, err error, op string) {
 	case errors.Is(err, endpoints.ErrNameConflict):
 		writeEventJSON(w, http.StatusConflict, map[string]any{
 			"error": "endpoint name already exists",
+		})
+	case errors.Is(err, endpoints.ErrMissingTenant):
+		writeEventJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "internal error",
 		})
 	default:
 		writeEventJSON(w, http.StatusServiceUnavailable, map[string]any{

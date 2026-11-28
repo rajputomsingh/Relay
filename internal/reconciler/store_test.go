@@ -11,6 +11,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+const reconcilerTestTenant = "reconciler-test-tenant"
+
 // newReconcilerTestDB connects to the test MongoDB and returns a fresh
 // database scoped to the caller. Skipped when MONGODB_TEST_URI is unset.
 func newReconcilerTestDB(t *testing.T, dbName string) *mongo.Database {
@@ -58,6 +60,7 @@ func TestFindOrphanedEvents(t *testing.T) {
 	eventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         eventID,
+		"tenant_id":   reconcilerTestTenant,
 		"source":      "test",
 		"event_type":  "user.created",
 		"received_at": oldTime,
@@ -70,6 +73,7 @@ func TestFindOrphanedEvents(t *testing.T) {
 	fannedOutID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":                   fannedOutID,
+		"tenant_id":             reconcilerTestTenant,
 		"source":                "test",
 		"event_type":            "user.created",
 		"received_at":           oldTime,
@@ -83,6 +87,7 @@ func TestFindOrphanedEvents(t *testing.T) {
 	normalEventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         normalEventID,
+		"tenant_id":   reconcilerTestTenant,
 		"source":      "test",
 		"event_type":  "user.created",
 		"received_at": oldTime,
@@ -90,8 +95,9 @@ func TestFindOrphanedEvents(t *testing.T) {
 		t.Fatalf("insert normal event: %v", err)
 	}
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
-		"event_id": normalEventID,
-		"status":   "pending",
+		"tenant_id": reconcilerTestTenant,
+		"event_id":  normalEventID,
+		"status":    "pending",
 	}); err != nil {
 		t.Fatalf("insert delivery: %v", err)
 	}
@@ -100,6 +106,7 @@ func TestFindOrphanedEvents(t *testing.T) {
 	recentEventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":         recentEventID,
+		"tenant_id":   reconcilerTestTenant,
 		"source":      "test",
 		"event_type":  "user.created",
 		"received_at": time.Now().UTC().Add(-1 * time.Minute),
@@ -132,6 +139,7 @@ func TestFindIncompleteFanoutIncompleteStatus(t *testing.T) {
 	incompleteID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":                   incompleteID,
+		"tenant_id":             reconcilerTestTenant,
 		"source":                "test",
 		"event_type":            "user.created",
 		"received_at":           time.Now().UTC(),
@@ -145,6 +153,7 @@ func TestFindIncompleteFanoutIncompleteStatus(t *testing.T) {
 	completedID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":                   completedID,
+		"tenant_id":             reconcilerTestTenant,
 		"source":                "test",
 		"event_type":            "user.created",
 		"received_at":           time.Now().UTC().Add(-1 * time.Hour),
@@ -180,6 +189,7 @@ func TestFindIncompleteFanoutInProgressOldEnough(t *testing.T) {
 	staleID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":           staleID,
+		"tenant_id":     reconcilerTestTenant,
 		"source":        "test",
 		"event_type":    "user.created",
 		"received_at":   oldTime,
@@ -192,6 +202,7 @@ func TestFindIncompleteFanoutInProgressOldEnough(t *testing.T) {
 	activeID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":           activeID,
+		"tenant_id":     reconcilerTestTenant,
 		"source":        "test",
 		"event_type":    "user.created",
 		"received_at":   time.Now().UTC().Add(-30 * time.Second),
@@ -224,6 +235,7 @@ func TestResetExpiredLeases(t *testing.T) {
 
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
+		"tenant_id":   reconcilerTestTenant,
 		"event_id":    bson.NewObjectID(),
 		"endpoint_id": bson.NewObjectID(),
 		"status":      "processing",
@@ -270,6 +282,7 @@ func TestResetExpiredLeasesSkipsActiveLease(t *testing.T) {
 
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
+		"tenant_id":   reconcilerTestTenant,
 		"status":      "processing",
 		"lease_until": now.Add(30 * time.Second),
 		"lease_token": "fresh-token",
@@ -310,6 +323,7 @@ func TestResetExpiredLeasesSkipsNonProcessing(t *testing.T) {
 
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
+		"tenant_id":   reconcilerTestTenant,
 		"status":      "delivered",
 		"lease_until": now.Add(-1 * time.Minute),
 		"lease_token": "stale-token",
@@ -347,6 +361,7 @@ func TestResetExpiredLeasesConcurrentReclaim(t *testing.T) {
 
 	if _, err := db.Collection("deliveries").InsertOne(ctx, bson.M{
 		"_id":         deliveryID,
+		"tenant_id":   reconcilerTestTenant,
 		"status":      "processing",
 		"lease_until": now.Add(-1 * time.Minute),
 		"lease_token": "old-token",

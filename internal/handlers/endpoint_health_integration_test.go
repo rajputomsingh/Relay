@@ -10,15 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/delivery"
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
 )
 
-func newEndpointHealthIntegration(t *testing.T) (*mongo.Database, *http.ServeMux) {
+func newEndpointHealthIntegration(t *testing.T) (*mongo.Database, http.Handler) {
 	t.Helper()
 
 	uri := strings.TrimSpace(os.Getenv("MONGODB_TEST_URI"))
@@ -70,10 +72,14 @@ func newEndpointHealthIntegration(t *testing.T) (*mongo.Database, *http.ServeMux
 		epStore,
 		db.Collection("deliveries"),
 		db.Collection("delivery_attempts"),
-		testAPIKey,
 	).Register(mux)
 
-	return db, mux
+	handler := auth.Middleware(
+		auth.LegacyResolver{Key: testAPIKey, Tenant: tenant.TenantID(testTenantID)},
+		nil,
+	)(mux)
+
+	return db, handler
 }
 
 func TestEndpointHealthIntegration(t *testing.T) {
@@ -82,6 +88,7 @@ func TestEndpointHealthIntegration(t *testing.T) {
 
 	epStore := endpoints.NewStore(db.Collection("endpoints"))
 	ep, err := epStore.Create(ctx, endpoints.Endpoint{
+		TenantID:    testTenantID,
 		Name:        "health-test",
 		URL:         "https://example.com/webhook",
 		MaxAttempts: 3,
@@ -97,84 +104,21 @@ func TestEndpointHealthIntegration(t *testing.T) {
 	failedNewest := now.Add(-5 * time.Minute)
 
 	_, err = db.Collection("deliveries").InsertMany(ctx, []any{
-		delivery.Delivery{
-			EventID:     bson.NewObjectID(),
-			EndpointID:  ep.ID,
-			Status:      delivery.StatusDelivered,
-			DeliveredAt: &deliveredAt,
-			CreatedAt:   deliveredAt,
-			UpdatedAt:   deliveredAt,
-		},
-		delivery.Delivery{
-			EventID:    bson.NewObjectID(),
-			EndpointID: ep.ID,
-			Status:     delivery.StatusFailed,
-			FailedAt:   &failedOld,
-			CreatedAt:  failedOld,
-			UpdatedAt:  failedOld,
-		},
-		delivery.Delivery{
-			EventID:    bson.NewObjectID(),
-			EndpointID: ep.ID,
-			Status:     delivery.StatusFailed,
-			FailedAt:   &failedRecent,
-			CreatedAt:  failedRecent,
-			UpdatedAt:  failedRecent,
-		},
-		delivery.Delivery{
-			EventID:    bson.NewObjectID(),
-			EndpointID: ep.ID,
-			Status:     delivery.StatusFailed,
-			FailedAt:   &failedNewest,
-			CreatedAt:  failedNewest,
-			UpdatedAt:  failedNewest,
-		},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "status": delivery.StatusDelivered, "delivered_at": &deliveredAt, "created_at": deliveredAt, "updated_at": deliveredAt},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "status": delivery.StatusFailed, "failed_at": &failedOld, "created_at": failedOld, "updated_at": failedOld},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "status": delivery.StatusFailed, "failed_at": &failedRecent, "created_at": failedRecent, "updated_at": failedRecent},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "status": delivery.StatusFailed, "failed_at": &failedNewest, "created_at": failedNewest, "updated_at": failedNewest},
 	})
 	if err != nil {
 		t.Fatalf("insert deliveries: %v", err)
 	}
 
 	_, err = db.Collection("delivery_attempts").InsertMany(ctx, []any{
-		delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    ep.ID,
-			AttemptNumber: 1,
-			StartedAt:     now.Add(-25 * time.Minute),
-			FinishedAt:    now.Add(-25 * time.Minute),
-			Outcome:       attemptOutcomeDelivered,
-		},
-		delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    ep.ID,
-			AttemptNumber: 1,
-			StartedAt:     now.Add(-20 * time.Minute),
-			FinishedAt:    now.Add(-20 * time.Minute),
-			Outcome:       attemptOutcomeDelivered,
-		},
-		delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    ep.ID,
-			AttemptNumber: 1,
-			StartedAt:     now.Add(-15 * time.Minute),
-			FinishedAt:    now.Add(-15 * time.Minute),
-			Outcome:       attemptOutcomeDelivered,
-		},
-		delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    ep.ID,
-			AttemptNumber: 2,
-			StartedAt:     now.Add(-5 * time.Minute),
-			FinishedAt:    now.Add(-5 * time.Minute),
-			Outcome:       attemptOutcomeFailed,
-		},
-		delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    ep.ID,
-			AttemptNumber: 1,
-			StartedAt:     now.Add(-2 * time.Hour),
-			FinishedAt:    now.Add(-2 * time.Hour),
-			Outcome:       attemptOutcomeFailed,
-		},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "attempt_number": 1, "started_at": now.Add(-25 * time.Minute), "finished_at": now.Add(-25 * time.Minute), "outcome": attemptOutcomeDelivered},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "attempt_number": 1, "started_at": now.Add(-20 * time.Minute), "finished_at": now.Add(-20 * time.Minute), "outcome": attemptOutcomeDelivered},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "attempt_number": 1, "started_at": now.Add(-15 * time.Minute), "finished_at": now.Add(-15 * time.Minute), "outcome": attemptOutcomeDelivered},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "attempt_number": 2, "started_at": now.Add(-5 * time.Minute), "finished_at": now.Add(-5 * time.Minute), "outcome": attemptOutcomeFailed},
+		bson.M{"tenant_id": testTenantID, "event_id": bson.NewObjectID(), "endpoint_id": ep.ID, "attempt_number": 1, "started_at": now.Add(-2 * time.Hour), "finished_at": now.Add(-2 * time.Hour), "outcome": attemptOutcomeFailed},
 	})
 	if err != nil {
 		t.Fatalf("insert attempts: %v", err)
@@ -218,6 +162,7 @@ func TestEndpointHealthIntegrationNoHistory(t *testing.T) {
 
 	epStore := endpoints.NewStore(db.Collection("endpoints"))
 	ep, err := epStore.Create(ctx, endpoints.Endpoint{
+		TenantID:    testTenantID,
 		Name:        "empty-health",
 		URL:         "https://example.com/webhook",
 		MaxAttempts: 3,
@@ -259,6 +204,7 @@ func TestEndpointHealthIntegrationScenarios(t *testing.T) {
 	createEndpoint := func(name string) endpoints.Endpoint {
 		t.Helper()
 		ep, err := epStore.Create(ctx, endpoints.Endpoint{
+			TenantID:    testTenantID,
 			Name:        name,
 			URL:         "https://example.com/webhook",
 			MaxAttempts: 3,
@@ -271,13 +217,14 @@ func TestEndpointHealthIntegrationScenarios(t *testing.T) {
 
 	insertAttempt := func(endpointID bson.ObjectID, at time.Time, outcome string) {
 		t.Helper()
-		_, err := attempts.InsertOne(ctx, delivery.Attempt{
-			EventID:       bson.NewObjectID(),
-			EndpointID:    endpointID,
-			AttemptNumber: 1,
-			StartedAt:     at,
-			FinishedAt:    at,
-			Outcome:       outcome,
+		_, err := attempts.InsertOne(ctx, bson.M{
+			"tenant_id":      testTenantID,
+			"event_id":       bson.NewObjectID(),
+			"endpoint_id":    endpointID,
+			"attempt_number": 1,
+			"started_at":     at,
+			"finished_at":    at,
+			"outcome":        outcome,
 		})
 		if err != nil {
 			t.Fatalf("insert attempt: %v", err)
@@ -286,17 +233,18 @@ func TestEndpointHealthIntegrationScenarios(t *testing.T) {
 
 	insertDelivery := func(endpointID bson.ObjectID, status string, at time.Time) {
 		t.Helper()
-		d := delivery.Delivery{
-			EventID:    bson.NewObjectID(),
-			EndpointID: endpointID,
-			Status:     status,
-			CreatedAt:  at,
-			UpdatedAt:  at,
+		d := bson.M{
+			"tenant_id":   testTenantID,
+			"event_id":    bson.NewObjectID(),
+			"endpoint_id": endpointID,
+			"status":      status,
+			"created_at":  at,
+			"updated_at":  at,
 		}
 		if status == delivery.StatusDelivered {
-			d.DeliveredAt = &at
+			d["delivered_at"] = &at
 		} else {
-			d.FailedAt = &at
+			d["failed_at"] = &at
 		}
 		if _, err := deliveries.InsertOne(ctx, d); err != nil {
 			t.Fatalf("insert delivery: %v", err)
@@ -310,13 +258,16 @@ func TestEndpointHealthIntegrationScenarios(t *testing.T) {
 		updatedAt time.Time,
 	) {
 		t.Helper()
-		d := delivery.Delivery{
-			ID:         id,
-			EventID:    bson.NewObjectID(),
-			EndpointID: endpointID,
-			Status:     status,
-			CreatedAt:  updatedAt,
-			UpdatedAt:  updatedAt,
+		d := bson.M{
+			"tenant_id":   testTenantID,
+			"event_id":    bson.NewObjectID(),
+			"endpoint_id": endpointID,
+			"status":      status,
+			"created_at":  updatedAt,
+			"updated_at":  updatedAt,
+		}
+		if !id.IsZero() {
+			d["_id"] = id
 		}
 		if _, err := deliveries.InsertOne(ctx, d); err != nil {
 			t.Fatalf("insert delivery: %v", err)

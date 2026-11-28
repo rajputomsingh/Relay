@@ -10,8 +10,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rajputomsingh/relay/internal/auth"
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+const (
+	testAPIKey   = "test-relay-api-key-that-is-at-least-32-chars"
+	testTenantID = "test-tenant"
 )
 
 type fakeEndpointsStore struct {
@@ -33,14 +40,14 @@ func (f *fakeEndpointsStore) Create(_ context.Context, ep endpoints.Endpoint) (e
 	return ep, nil
 }
 
-func (f *fakeEndpointsStore) List(_ context.Context) ([]endpoints.Endpoint, error) {
+func (f *fakeEndpointsStore) List(_ context.Context, tenantID string) ([]endpoints.Endpoint, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.listItems, nil
 }
 
-func (f *fakeEndpointsStore) Get(_ context.Context, id bson.ObjectID) (endpoints.Endpoint, error) {
+func (f *fakeEndpointsStore) Get(_ context.Context, tenantID string, id bson.ObjectID) (endpoints.Endpoint, error) {
 	if f.err != nil {
 		return endpoints.Endpoint{}, f.err
 	}
@@ -50,7 +57,7 @@ func (f *fakeEndpointsStore) Get(_ context.Context, id bson.ObjectID) (endpoints
 	return f.getItem, nil
 }
 
-func (f *fakeEndpointsStore) Update(_ context.Context, id bson.ObjectID, u endpoints.Update) (endpoints.Endpoint, error) {
+func (f *fakeEndpointsStore) Update(_ context.Context, tenantID string, id bson.ObjectID, u endpoints.Update) (endpoints.Endpoint, error) {
 	if f.err != nil {
 		return endpoints.Endpoint{}, f.err
 	}
@@ -61,7 +68,7 @@ func (f *fakeEndpointsStore) Update(_ context.Context, id bson.ObjectID, u endpo
 	return ep, nil
 }
 
-func (f *fakeEndpointsStore) Disable(_ context.Context, id bson.ObjectID) (endpoints.Endpoint, error) {
+func (f *fakeEndpointsStore) Disable(_ context.Context, tenantID string, id bson.ObjectID) (endpoints.Endpoint, error) {
 	if f.err != nil {
 		return endpoints.Endpoint{}, f.err
 	}
@@ -72,10 +79,13 @@ func (f *fakeEndpointsStore) Disable(_ context.Context, id bson.ObjectID) (endpo
 	return ep, nil
 }
 
-func newEndpointsTestMux(store endpointsStore) *http.ServeMux {
+func newEndpointsTestMux(store endpointsStore) http.Handler {
 	mux := http.NewServeMux()
-	NewEndpointsHandler(store, testAPIKey).Register(mux)
-	return mux
+	NewEndpointsHandler(store).Register(mux)
+	return auth.Middleware(
+		auth.LegacyResolver{Key: testAPIKey, Tenant: tenant.TenantID(testTenantID)},
+		nil,
+	)(mux)
 }
 
 func performEndpointRequest(
@@ -136,14 +146,12 @@ func TestEndpointsMethodNotAllowed(t *testing.T) {
 func TestEndpointsCreateValidation(t *testing.T) {
 	mux := newEndpointsTestMux(&fakeEndpointsStore{})
 
-	// Missing URL.
 	body := `{"name":"billing","max_attempts":8}`
 	rec := performEndpointRequest(mux, http.MethodPost, "/v1/endpoints", body, testAPIKey)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing URL, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Unknown field.
 	body = `{"name":"billing","url":"https://example.com/hook","max_attempts":8,"unexpected":true}`
 	rec = performEndpointRequest(mux, http.MethodPost, "/v1/endpoints", body, testAPIKey)
 	if rec.Code != http.StatusBadRequest {
@@ -180,6 +188,11 @@ func TestEndpointsCreateSuccessDoesNotLeakSecret(t *testing.T) {
 	}
 	if resp.Name != "billing" {
 		t.Fatalf("unexpected name: %q", resp.Name)
+	}
+
+	if store.created.TenantID != testTenantID {
+		t.Fatalf("created endpoint TenantID = %q, want %q",
+			store.created.TenantID, testTenantID)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -19,6 +20,7 @@ type noopFanouter struct {
 
 func (n *noopFanouter) FanOutEvent(
 	_ context.Context,
+	_ tenant.TenantID,
 	eventID bson.ObjectID,
 	_ string,
 	_ string,
@@ -70,6 +72,7 @@ func TestPartialFanoutDetectedAndRecovered(t *testing.T) {
 	eventID := bson.NewObjectID()
 	if _, err := eventsCol.InsertOne(ctx, bson.M{
 		"_id":                   eventID,
+		"tenant_id":             reconcilerTestTenant,
 		"source":                "test",
 		"event_type":            "test.created",
 		"received_at":           oldEnough,
@@ -83,6 +86,7 @@ func TestPartialFanoutDetectedAndRecovered(t *testing.T) {
 	}
 	if _, err := deliveriesCol.InsertOne(ctx, bson.M{
 		"_id":          bson.NewObjectID(),
+		"tenant_id":    reconcilerTestTenant,
 		"event_id":     eventID,
 		"endpoint_id":  bson.NewObjectID(),
 		"status":       "pending",

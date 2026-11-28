@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"errors"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -37,4 +38,14 @@ type Delivery struct {
 // IsTerminal reports whether the delivery has reached a final state.
 func (d Delivery) IsTerminal() bool {
 	return d.Status == StatusDelivered || d.Status == StatusFailed
+}
+
+// ValidateTenant returns an error if the delivery has no tenant.
+// Called at insert/update boundaries so we never persist an
+// unscoped delivery document.
+func (d Delivery) ValidateTenant() error {
+	if d.TenantID == "" {
+		return errors.New("delivery: TenantID is required")
+	}
+	return nil
 }

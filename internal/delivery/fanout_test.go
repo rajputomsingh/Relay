@@ -7,10 +7,13 @@ import (
 	"time"
 
 	"github.com/rajputomsingh/relay/internal/endpoints"
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+const fanoutTestTenant = tenant.TenantID("tenant_test")
 
 // TestDeliveryUniqueKeyShape verifies that the delivery document carries the
 // (event_id, endpoint_id) pair that the unique index relies on.
@@ -139,6 +142,7 @@ func seedFanoutEvent(
 
 	if _, err := events.InsertOne(context.Background(), bson.M{
 		"_id":             eventID,
+		"tenant_id":       string(fanoutTestTenant),
 		"source":          source,
 		"event_type":      eventType,
 		"data":            bson.M{},
@@ -162,6 +166,7 @@ func seedFanoutEndpoint(
 	id := bson.NewObjectID()
 	doc := bson.M{
 		"_id":          id,
+		"tenant_id":    string(fanoutTestTenant),
 		"name":         "ep-" + id.Hex(),
 		"url":          "https://example.invalid/hook",
 		"enabled":      true,
@@ -198,7 +203,7 @@ func TestFanoutZeroMatchingEndpointsRecordsNoDestination(t *testing.T) {
 	// No endpoints seeded — zero matches expected.
 
 	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
-	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
+	if err := f.CreateDeliveries(ctx, fanoutTestTenant, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries returned error for zero-endpoint case: %v", err)
 	}
 
@@ -243,7 +248,7 @@ func TestFanoutMatchingEndpointsRecordsExpectedCount(t *testing.T) {
 	seedFanoutEvent(t, events, eventID, "billing", "invoice.paid")
 
 	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
-	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
+	if err := f.CreateDeliveries(ctx, fanoutTestTenant, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries: %v", err)
 	}
 
@@ -281,10 +286,10 @@ func TestFanoutIdempotentOnRepeatedCall(t *testing.T) {
 	seedFanoutEvent(t, events, eventID, "billing", "invoice.paid")
 
 	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
-	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
+	if err := f.CreateDeliveries(ctx, fanoutTestTenant, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("first CreateDeliveries: %v", err)
 	}
-	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
+	if err := f.CreateDeliveries(ctx, fanoutTestTenant, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("second CreateDeliveries: %v", err)
 	}
 
@@ -323,7 +328,7 @@ func TestFanoutRerecordsStatusOnRecovery(t *testing.T) {
 	}
 
 	f := NewFanout(events, endpointsCol, deliveries, nil, nil)
-	if err := f.CreateDeliveries(ctx, eventID, "billing", "invoice.paid"); err != nil {
+	if err := f.CreateDeliveries(ctx, fanoutTestTenant, eventID, "billing", "invoice.paid"); err != nil {
 		t.Fatalf("CreateDeliveries: %v", err)
 	}
 

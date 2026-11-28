@@ -12,27 +12,22 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// ErrNotFound is returned when an endpoint does not exist.
 var ErrNotFound = errors.New("endpoint not found")
-
-// ErrNameConflict is returned when a name is already used by an active endpoint.
 var ErrNameConflict = errors.New("endpoint name already exists")
+var ErrMissingTenant = errors.New("tenant ID is required")
 
-// Store persists endpoints in MongoDB.
 type Store struct {
 	collection *mongo.Collection
 }
 
-// NewStore creates a Store backed by the given collection.
 func NewStore(collection *mongo.Collection) *Store {
 	return &Store{collection: collection}
 }
 
-// Create inserts a new endpoint.
-func (s *Store) Create(
-	ctx context.Context,
-	ep Endpoint,
-) (Endpoint, error) {
+func (s *Store) Create(ctx context.Context, ep Endpoint) (Endpoint, error) {
+	if ep.TenantID == "" {
+		return Endpoint{}, ErrMissingTenant
+	}
 	if err := ep.Validate(); err != nil {
 		return Endpoint{}, err
 	}
@@ -42,7 +37,6 @@ func (s *Store) Create(
 	ep.CreatedAt = now
 	ep.UpdatedAt = now
 
-	// New endpoints are enabled unless the caller explicitly disabled them.
 	if !ep.Enabled && ep.DisabledAt == nil {
 		ep.Enabled = true
 	}
@@ -58,11 +52,14 @@ func (s *Store) Create(
 	return ep, nil
 }
 
-// List returns all endpoints, enabled and disabled.
-func (s *Store) List(ctx context.Context) ([]Endpoint, error) {
+func (s *Store) List(ctx context.Context, tenantID string) ([]Endpoint, error) {
+	if tenantID == "" {
+		return nil, ErrMissingTenant
+	}
+
 	cursor, err := s.collection.Find(
 		ctx,
-		bson.M{},
+		bson.M{"tenant_id": tenantID},
 		options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -82,13 +79,13 @@ func (s *Store) List(ctx context.Context) ([]Endpoint, error) {
 	return result, nil
 }
 
-// Get returns a single endpoint by ID.
-func (s *Store) Get(
-	ctx context.Context,
-	id bson.ObjectID,
-) (Endpoint, error) {
+func (s *Store) Get(ctx context.Context, tenantID string, id bson.ObjectID) (Endpoint, error) {
+	if tenantID == "" {
+		return Endpoint{}, ErrMissingTenant
+	}
+
 	var ep Endpoint
-	err := s.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&ep)
+	err := s.collection.FindOne(ctx, bson.M{"_id": id, "tenant_id": tenantID}).Decode(&ep)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return Endpoint{}, ErrNotFound
 	}
@@ -98,13 +95,12 @@ func (s *Store) Get(
 	return ep, nil
 }
 
-// Update applies a partial update to an endpoint.
-func (s *Store) Update(
-	ctx context.Context,
-	id bson.ObjectID,
-	update Update,
-) (Endpoint, error) {
-	existing, err := s.Get(ctx, id)
+func (s *Store) Update(ctx context.Context, tenantID string, id bson.ObjectID, update Update) (Endpoint, error) {
+	if tenantID == "" {
+		return Endpoint{}, ErrMissingTenant
+	}
+
+	existing, err := s.Get(ctx, tenantID, id)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -116,7 +112,7 @@ func (s *Store) Update(
 
 	result, err := s.collection.ReplaceOne(
 		ctx,
-		bson.M{"_id": id},
+		bson.M{"_id": id, "tenant_id": tenantID},
 		existing,
 	)
 	if err != nil {
@@ -132,17 +128,17 @@ func (s *Store) Update(
 	return existing, nil
 }
 
-// Disable soft-deletes an endpoint.
-func (s *Store) Disable(
-	ctx context.Context,
-	id bson.ObjectID,
-) (Endpoint, error) {
+func (s *Store) Disable(ctx context.Context, tenantID string, id bson.ObjectID) (Endpoint, error) {
+	if tenantID == "" {
+		return Endpoint{}, ErrMissingTenant
+	}
+
 	now := time.Now().UTC()
 
 	var updated Endpoint
 	err := s.collection.FindOneAndUpdate(
 		ctx,
-		bson.M{"_id": id},
+		bson.M{"_id": id, "tenant_id": tenantID},
 		bson.M{
 			"$set": bson.M{
 				"enabled":     false,

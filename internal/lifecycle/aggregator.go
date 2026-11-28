@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rajputomsingh/relay/internal/tenant"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
@@ -59,16 +60,21 @@ func NewAggregator(
 // If the event is disabled, the aggregator does not change its status.
 func (a *Aggregator) AggregateEvent(
 	ctx context.Context,
+	tid tenant.TenantID,
 	eventID bson.ObjectID,
 ) error {
+	if tid == "" {
+		return errors.New("aggregate event: tenant ID is required")
+	}
 	var event struct {
 		ID             bson.ObjectID `bson:"_id"`
+		TenantID       string        `bson:"tenant_id"`
 		DeliveryStatus string        `bson:"delivery_status"`
 		FanoutStatus   string        `bson:"fanout_status"`
 		ExpectedCount  int           `bson:"fanout_expected_count"`
 	}
 	if err := a.events.FindOne(
-		ctx, bson.M{"_id": eventID},
+		ctx, bson.M{"_id": eventID, "tenant_id": string(tid)},
 	).Decode(&event); err != nil {
 		return err
 	}
@@ -83,21 +89,21 @@ func (a *Aggregator) AggregateEvent(
 	// Zero matching endpoints: fan-out completed with expected count 0.
 	// This is a terminal state and requires no delivery work.
 	if event.FanoutStatus == "completed" && event.ExpectedCount == 0 {
-		return a.writeStatus(ctx, eventID, StatusNoDestination, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusNoDestination, now, nil)
 	}
 
 	// Fan-out incomplete: do not attempt to derive a terminal status yet.
 	// The reconciler will re-run fan-out; once that completes, this method
 	// is called again and produces a terminal state.
 	if event.FanoutStatus == "in_progress" || event.FanoutStatus == "incomplete" {
-		return a.writeStatus(ctx, eventID, StatusProcessing, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusProcessing, now, nil)
 	}
 
 	// Aggregate child delivery states.
 	cursor, err := a.deliveries.Aggregate(
 		ctx,
 		mongo.Pipeline{
-			bson.D{{Key: "$match", Value: bson.M{"event_id": eventID}}},
+			bson.D{{Key: "$match", Value: bson.M{"event_id": eventID, "tenant_id": string(tid)}}},
 			bson.D{{Key: "$group", Value: bson.M{
 				"_id":   "$status",
 				"count": bson.M{"$sum": 1},
@@ -131,7 +137,7 @@ func (a *Aggregator) AggregateEvent(
 	// Zero child deliveries and fan-out not marked complete: still processing.
 	// The reconciler will recover the missing fan-out.
 	if total == 0 {
-		return a.writeStatus(ctx, eventID, StatusProcessing, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusProcessing, now, nil)
 	}
 
 	delivered := counts["delivered"]
@@ -141,21 +147,22 @@ func (a *Aggregator) AggregateEvent(
 
 	switch {
 	case processing > 0:
-		return a.writeStatus(ctx, eventID, StatusProcessing, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusProcessing, now, nil)
 	case pending > 0:
-		return a.writeStatus(ctx, eventID, StatusPending, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusPending, now, nil)
 	case delivered == total:
-		return a.writeStatus(ctx, eventID, StatusDelivered, now, &now)
+		return a.writeStatus(ctx, tid, eventID, StatusDelivered, now, &now)
 	case delivered+failed == total && failed > 0:
-		return a.writeStatus(ctx, eventID, StatusFailed, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusFailed, now, nil)
 	default:
-		return a.writeStatus(ctx, eventID, StatusProcessing, now, nil)
+		return a.writeStatus(ctx, tid, eventID, StatusProcessing, now, nil)
 	}
 }
 
 // writeStatus persists the aggregated status with the correct timestamp.
 func (a *Aggregator) writeStatus(
 	ctx context.Context,
+	tid tenant.TenantID,
 	eventID bson.ObjectID,
 	status string,
 	now time.Time,
@@ -193,6 +200,7 @@ func (a *Aggregator) writeStatus(
 		ctx,
 		bson.M{
 			"_id":             eventID,
+			"tenant_id":       string(tid),
 			"delivery_status": bson.M{"$ne": StatusDisabled},
 		},
 		update,
